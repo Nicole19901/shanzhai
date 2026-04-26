@@ -71,7 +71,8 @@ type RiskConfig struct {
 }
 
 type WebUIConfig struct {
-	Addr string `mapstructure:"addr"`
+	Addr        string `mapstructure:"addr"`
+	ServiceName string `mapstructure:"service_name"`
 }
 
 type SamplingConfig struct {
@@ -118,6 +119,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.WebUI.Addr == "" {
 		cfg.WebUI.Addr = ":8080"
+	}
+	if cfg.WebUI.ServiceName == "" {
+		cfg.WebUI.ServiceName = "eth-perp-system"
 	}
 
 	// 展开环境变量

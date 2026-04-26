@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os/exec"
+	"time"
 
 	"github.com/rs/zerolog/log"
 )
@@ -15,11 +17,16 @@ const (
 )
 
 type Server struct {
-	params *LiveParams
+	params      *LiveParams
+	events      *EventLog
+	serviceName string
 }
 
-func NewServer(params *LiveParams) *Server {
-	return &Server{params: params}
+func NewServer(params *LiveParams, events *EventLog, serviceName string) *Server {
+	if serviceName == "" {
+		serviceName = "eth-perp-system"
+	}
+	return &Server{params: params, events: events, serviceName: serviceName}
 }
 
 func (s *Server) Listen(addr string) {
@@ -28,6 +35,9 @@ func (s *Server) Listen(addr string) {
 	mux.HandleFunc("/api/params", s.auth(s.handleParams))
 	mux.HandleFunc("/api/params/reset", s.auth(s.handleReset))
 	mux.HandleFunc("/api/params/initialize", s.auth(s.handleInitialize))
+	mux.HandleFunc("/api/logs", s.auth(s.handleLogs))
+	mux.HandleFunc("/api/control/stop", s.auth(s.handleStop))
+	mux.HandleFunc("/api/control/restart", s.auth(s.handleRestart))
 
 	log.Info().Str("addr", addr).Msg("webui server starting")
 	go func() {
@@ -83,10 +93,7 @@ func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 	}
 	s.params.Reset()
 	log.Info().Msg("webui: params reset to initialized defaults")
-	writeJSON(w, map[string]interface{}{
-		"status":  "reset",
-		"current": s.params.Get(),
-	})
+	writeJSON(w, map[string]interface{}{"status": "reset", "current": s.params.Get()})
 }
 
 func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request) {
@@ -101,6 +108,40 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request) {
 		"defaults": defaults,
 		"current":  s.params.Get(),
 	})
+}
+
+func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, map[string]interface{}{
+		"entries": s.events.Recent(),
+	})
+}
+
+func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
+	s.handleControl(w, r, "stop")
+}
+
+func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
+	s.handleControl(w, r, "restart")
+}
+
+func (s *Server) handleControl(w http.ResponseWriter, r *http.Request, action string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	log.Warn().Str("action", action).Str("service", s.serviceName).Msg("webui: service control requested")
+	writeJSON(w, map[string]string{"status": "accepted", "action": action})
+
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		if err := exec.Command("systemctl", action, s.serviceName).Run(); err != nil {
+			log.Error().Err(err).Str("action", action).Str("service", s.serviceName).Msg("systemctl command failed")
+		}
+	}()
 }
 
 func validateSnapshot(s LiveParamsSnapshot) error {
@@ -167,22 +208,28 @@ const adminHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ETH-Perp 参数后台</title>
+<title>ETH-Perp 控制台</title>
 <style>
-*{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#101418;color:#e8edf2;padding:24px}.top{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:18px}h1{font-size:22px;margin:0;color:#f2f6fa}.badge{font-size:12px;color:#79c0ff;border:1px solid #27547a;border-radius:999px;padding:4px 9px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}.card{background:#171d23;border:1px solid #29333d;border-radius:8px;padding:16px}.card h2{font-size:14px;margin:0 0 12px;color:#a9b7c4}.field{margin-bottom:12px}.field label{display:flex;justify-content:space-between;gap:12px;font-size:13px;color:#d6dee6;margin-bottom:6px}.field span{color:#79c0ff;font-family:Consolas,monospace;white-space:nowrap}input{width:100%;background:#0d1116;border:1px solid #34414d;border-radius:5px;color:#e8edf2;padding:7px 9px}input[type=range]{padding:0;accent-color:#2f81f7}.check{display:flex;align-items:center;gap:8px;font-size:13px;color:#d6dee6}.check input{width:auto}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}button{border:0;border-radius:6px;padding:9px 14px;color:#fff;font-weight:600;cursor:pointer}.save{background:#238636}.init{background:#8957e5}.reset{background:#3b434c}.msg{display:none;margin-top:12px;border-radius:6px;padding:9px 12px;font-size:13px}.ok{display:block;background:#102b1a;color:#56d364;border:1px solid #238636}.err{display:block;background:#341416;color:#ff7b72;border:1px solid #8e2b31}@media(max-width:560px){body{padding:14px}.top{align-items:flex-start;flex-direction:column}}
+*{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#101418;color:#e8edf2;padding:24px}.top{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:18px}h1{font-size:22px;margin:0;color:#f2f6fa}.badge{font-size:12px;color:#79c0ff;border:1px solid #27547a;border-radius:999px;padding:4px 9px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}.card{background:#171d23;border:1px solid #29333d;border-radius:8px;padding:16px}.card h2{font-size:14px;margin:0 0 12px;color:#a9b7c4}.field{margin-bottom:12px}.field label{display:flex;justify-content:space-between;gap:12px;font-size:13px;color:#d6dee6;margin-bottom:6px}.field span{color:#79c0ff;font-family:Consolas,monospace;white-space:nowrap}input{width:100%;background:#0d1116;border:1px solid #34414d;border-radius:5px;color:#e8edf2;padding:7px 9px}input[type=range]{padding:0;accent-color:#2f81f7}.check{display:flex;align-items:center;gap:8px;font-size:13px;color:#d6dee6}.check input{width:auto}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}button{border:0;border-radius:6px;padding:9px 14px;color:#fff;font-weight:600;cursor:pointer}.save{background:#238636}.init{background:#8957e5}.reset{background:#3b434c}.restart{background:#0969da}.stop{background:#da3633}.msg{display:none;margin-top:12px;border-radius:6px;padding:9px 12px;font-size:13px}.ok{display:block;background:#102b1a;color:#56d364;border:1px solid #238636}.err{display:block;background:#341416;color:#ff7b72;border:1px solid #8e2b31}.panel{margin-top:18px}.logbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px}.loglist{height:260px;overflow:auto;background:#0d1116;border:1px solid #29333d;border-radius:8px}.row{display:grid;grid-template-columns:170px 88px 1fr;gap:10px;padding:9px 12px;border-bottom:1px solid #202a33;font-size:13px}.row:last-child{border-bottom:0}.time{color:#8b949e}.type{font-family:Consolas,monospace;color:#79c0ff}.type.OPEN{color:#56d364}.type.CLOSE{color:#ffb86b}.details{color:#d6dee6;word-break:break-word}.muted{color:#8b949e;font-size:13px}@media(max-width:760px){body{padding:14px}.top{align-items:flex-start;flex-direction:column}.row{grid-template-columns:1fr}.time,.type{font-size:12px}}
 </style>
 </head>
 <body>
-<div class="top"><h1>ETH-Perp 参数后台</h1><div class="badge">Basic Auth: vera@1030</div></div>
+<div class="top"><h1>ETH-Perp 控制台</h1><div class="badge">Basic Auth: vera@1030</div></div>
 <form id="form">
 <div class="grid" id="grid"></div>
 <div class="actions">
   <button class="save" type="submit">保存参数</button>
   <button class="init" type="button" id="initBtn">初始化为当前参数</button>
   <button class="reset" type="button" id="resetBtn">恢复初始化值</button>
+  <button class="restart" type="button" id="restartBtn">重启系统</button>
+  <button class="stop" type="button" id="stopBtn">停止系统</button>
 </div>
 <div id="msg" class="msg"></div>
 </form>
+<section class="panel card">
+  <div class="logbar"><h2>开单日志</h2><span class="muted" id="logHint">自动刷新</span></div>
+  <div class="loglist" id="logs"></div>
+</section>
 <script>
 const groups=[
 {title:'止盈止损',items:[
@@ -225,7 +272,11 @@ for(const it of fields){document.getElementById(it[0]).addEventListener('input',
 document.getElementById('form').addEventListener('submit',async e=>{e.preventDefault();const p=collect();if(p.take_profit_pct/p.stop_loss_pct<1.5){msg('盈亏比必须 >= 1.5',false);return}const r=await fetch('/api/params',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok){const d=await r.json();populate(d.current);msg('参数已保存',true)}else msg('保存失败: '+await r.text(),false)});
 document.getElementById('resetBtn').onclick=async()=>{if(!confirm('恢复到初始化参数？'))return;const r=await fetch('/api/params/reset',{method:'POST'});if(r.ok){const d=await r.json();populate(d.current);msg('已恢复初始化值',true)}else msg('恢复失败',false)};
 document.getElementById('initBtn').onclick=async()=>{if(!confirm('把当前参数保存为新的初始化值？'))return;const r=await fetch('/api/params/initialize',{method:'POST'});if(r.ok){msg('当前参数已保存为初始化值',true)}else msg('初始化失败',false)};
-(async()=>{try{const r=await fetch('/api/params');const d=await r.json();populate(d.current)}catch(e){msg('加载参数失败: '+e,false)}})();
+document.getElementById('restartBtn').onclick=async()=>{if(!confirm('确认重启系统服务？'))return;const r=await fetch('/api/control/restart',{method:'POST'});msg(r.ok?'已发送重启命令':'重启命令失败',r.ok)};
+document.getElementById('stopBtn').onclick=async()=>{if(!confirm('确认停止系统服务？停止后需要用 SSH 或服务器面板启动。'))return;const r=await fetch('/api/control/stop',{method:'POST'});msg(r.ok?'已发送停止命令':'停止命令失败',r.ok)};
+function renderLogs(entries){const box=document.getElementById('logs');box.innerHTML='';if(!entries.length){box.innerHTML='<div class="row"><div class="details">暂无开单/平仓记录</div></div>';return}for(const e of entries.slice().reverse()){const f=e.fields||{};const detail=[e.message,f.dir&&('方向 '+f.dir),f.qty&&('数量 '+f.qty),f.entry&&('开仓 '+f.entry),f.exit&&('平仓 '+f.exit),f.pnl_pct!==undefined&&('PnL '+Number(f.pnl_pct).toFixed(4)+'%'),f.reason&&('原因 '+f.reason)].filter(Boolean).join(' | ');const row=document.createElement('div');row.className='row';row.innerHTML='<div class="time">'+new Date(e.time).toLocaleString()+'</div><div class="type '+e.type+'">'+e.type+'</div><div class="details">'+detail+'</div>';box.appendChild(row)}}
+async function loadLogs(){try{const r=await fetch('/api/logs');const d=await r.json();renderLogs(d.entries||[]);document.getElementById('logHint').textContent='最后刷新 '+new Date().toLocaleTimeString()}catch(e){document.getElementById('logHint').textContent='日志加载失败'}}
+(async()=>{try{const r=await fetch('/api/params');const d=await r.json();populate(d.current)}catch(e){msg('加载参数失败: '+e,false)}loadLogs();setInterval(loadLogs,3000)})();
 </script>
 </body>
 </html>`

@@ -22,12 +22,12 @@ type Channels struct {
 
 func NewChannels() *Channels {
 	return &Channels{
-		ETHAggTrade:  make(chan *AggTrade, 512),
-		ETHDepth:     make(chan *DepthUpdate, 256),
+		ETHAggTrade:  make(chan *AggTrade, 8192),
+		ETHDepth:     make(chan *DepthUpdate, 1024),
 		ETHMarkPrice: make(chan *MarkPrice, 128),
 		ETHKline1s:   make(chan *Kline, 128),
 		ETHKline1m:   make(chan *Kline, 64),
-		BTCAggTrade:  make(chan *AggTrade, 512),
+		BTCAggTrade:  make(chan *AggTrade, 4096),
 		BTCMarkPrice: make(chan *MarkPrice, 128),
 	}
 }
@@ -99,7 +99,7 @@ func MakeAggTradeHandler(ch chan<- *AggTrade) func(json.RawMessage, int64) {
 			IsBuyerMaker: isBuyerMaker,
 		}:
 		default:
-			log.Warn().Msg("aggTrade channel full, dropping")
+			log.Debug().Msg("aggTrade channel full, dropping")
 		}
 	}
 }
@@ -153,7 +153,7 @@ func MakeDepthHandler(ch chan<- *DepthUpdate) func(json.RawMessage, int64) {
 			LocalTime:     localTime,
 		}:
 		default:
-			log.Warn().Msg("depth channel full, dropping")
+			log.Debug().Msg("depth channel full, dropping")
 		}
 	}
 }

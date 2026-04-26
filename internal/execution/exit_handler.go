@@ -37,6 +37,7 @@ type TradeHandler struct {
 	guard   *risk.Guardrails
 	cfg     *config.Config
 	params  *webui.LiveParams
+	events  *webui.EventLog
 	metrics *telemetry.Metrics
 
 	cooldownUntil int64 // ms，平仓后冷却
@@ -49,9 +50,10 @@ func NewTradeHandler(
 	guard *risk.Guardrails,
 	cfg *config.Config,
 	params *webui.LiveParams,
+	events *webui.EventLog,
 	m *telemetry.Metrics,
 ) *TradeHandler {
-	return &TradeHandler{pm: pm, om: om, sm: sm, guard: guard, cfg: cfg, params: params, metrics: m}
+	return &TradeHandler{pm: pm, om: om, sm: sm, guard: guard, cfg: cfg, params: params, events: events, metrics: m}
 }
 
 // TryOpen 尝试开仓（严格按照 spec 顺序检查）
@@ -136,6 +138,15 @@ func (h *TradeHandler) TryOpen(ctx context.Context, sig *engine.Signal) {
 		Str("sl", slPrice.String()).
 		Str("tp", tpPrice.String()).
 		Msg("position opened with guard orders")
+	if h.events != nil {
+		h.events.Add("OPEN", "position opened", map[string]interface{}{
+			"dir":         dirStr(dir),
+			"qty":         qty.String(),
+			"entry":       fillPrice.String(),
+			"stop_loss":   slPrice.String(),
+			"take_profit": tpPrice.String(),
+		})
+	}
 }
 
 func (h *TradeHandler) computeGuardPrices(dir datafeed.Direction, entryPrice decimal.Decimal) (sl, tp decimal.Decimal) {
@@ -270,6 +281,17 @@ func (h *TradeHandler) doClose(ctx context.Context, reason ExitReason) {
 		Float64("pnl_pct", pnlPct).
 		Int64("holding_ms", time.Now().UnixMilli()-prev.EntryTime).
 		Msg("position closed")
+	if h.events != nil {
+		h.events.Add("CLOSE", "position closed", map[string]interface{}{
+			"reason":     string(reason),
+			"dir":        dirStr(prev.Direction),
+			"qty":        prev.Quantity.String(),
+			"entry":      prev.EntryPrice.String(),
+			"exit":       fillPrice.String(),
+			"pnl_pct":    pnlPct,
+			"holding_ms": time.Now().UnixMilli() - prev.EntryTime,
+		})
+	}
 }
 
 func dirStr(d datafeed.Direction) string {

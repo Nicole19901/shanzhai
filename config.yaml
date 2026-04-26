@@ -34,6 +34,7 @@ risk:
 
 webui:
   addr: ":8080"
+  service_name: "eth-perp-system"
 
 sampling:
   fast_interval_ms: 200

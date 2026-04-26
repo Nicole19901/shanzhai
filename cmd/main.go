@@ -55,9 +55,10 @@ func main() {
 
 	// LiveParams：运行时可热更新的参数
 	liveParams := webui.NewLiveParams(cfg)
+	eventLog := webui.NewEventLog(300)
 
 	// 管理后台（:8080）
-	admin := webui.NewServer(liveParams)
+	admin := webui.NewServer(liveParams, eventLog, cfg.WebUI.ServiceName)
 	admin.Listen(cfg.WebUI.Addr)
 
 	pm := execution.NewPositionManager(cfg.Trading.Symbol)
@@ -72,7 +73,7 @@ func main() {
 	slippageEst := risk.NewSlippageEstimator()
 
 	omgr := execution.NewOrderManager(rest, cfg, metrics)
-	tradeHandler := execution.NewTradeHandler(pm, omgr, sm, guard, cfg, liveParams, metrics)
+	tradeHandler := execution.NewTradeHandler(pm, omgr, sm, guard, cfg, liveParams, eventLog, metrics)
 
 	recon := execution.NewReconciliationLoop(
 		rest, pm, omgr, sm, cfg.Trading.Symbol,
