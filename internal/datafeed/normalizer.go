@@ -237,39 +237,74 @@ func MakeKlineHandler(ch chan<- *Kline) func(json.RawMessage, int64) {
 			log.Warn().Err(fmt.Errorf("missing field %q", "k")).Msg("kline parse failed")
 			return
 		}
-		var k struct {
-			T  int64  `json:"t"`
-			T2 int64  `json:"T"`
-			I  string `json:"i"`
-			O  string `json:"o"`
-			H  string `json:"h"`
-			L  string `json:"l"`
-			C  string `json:"c"`
-			V  string `json:"v"`
-			X  bool   `json:"x"`
+		kFields, err := objectFields(klineRaw)
+		if err != nil {
+			log.Warn().Err(err).Msg("kline parse failed")
+			return
 		}
-		if err := json.Unmarshal(klineRaw, &k); err != nil {
+		openTime, err := int64Field(kFields, "t")
+		if err != nil {
+			log.Warn().Err(err).Msg("kline parse failed")
+			return
+		}
+		closeTime, err := int64Field(kFields, "T")
+		if err != nil {
+			log.Warn().Err(err).Msg("kline parse failed")
+			return
+		}
+		interval, err := stringField(kFields, "i")
+		if err != nil {
+			log.Warn().Err(err).Msg("kline parse failed")
+			return
+		}
+		openStr, err := stringField(kFields, "o")
+		if err != nil {
+			log.Warn().Err(err).Msg("kline parse failed")
+			return
+		}
+		highStr, err := stringField(kFields, "h")
+		if err != nil {
+			log.Warn().Err(err).Msg("kline parse failed")
+			return
+		}
+		lowStr, err := stringField(kFields, "l")
+		if err != nil {
+			log.Warn().Err(err).Msg("kline parse failed")
+			return
+		}
+		closeStr, err := stringField(kFields, "c")
+		if err != nil {
+			log.Warn().Err(err).Msg("kline parse failed")
+			return
+		}
+		volumeStr, err := stringField(kFields, "v")
+		if err != nil {
+			log.Warn().Err(err).Msg("kline parse failed")
+			return
+		}
+		isClosed, err := boolField(kFields, "x")
+		if err != nil {
 			log.Warn().Err(err).Msg("kline parse failed")
 			return
 		}
 
-		o, _ := decimal.NewFromString(k.O)
-		h, _ := decimal.NewFromString(k.H)
-		l, _ := decimal.NewFromString(k.L)
-		c, _ := decimal.NewFromString(k.C)
-		v, _ := decimal.NewFromString(k.V)
+		o, _ := decimal.NewFromString(openStr)
+		h, _ := decimal.NewFromString(highStr)
+		l, _ := decimal.NewFromString(lowStr)
+		c, _ := decimal.NewFromString(closeStr)
+		v, _ := decimal.NewFromString(volumeStr)
 		select {
 		case ch <- &Kline{
 			Symbol:    symbol,
-			Interval:  k.I,
-			OpenTime:  k.T,
-			CloseTime: k.T2,
+			Interval:  interval,
+			OpenTime:  openTime,
+			CloseTime: closeTime,
 			Open:      o,
 			High:      h,
 			Low:       l,
 			Close:     c,
 			Volume:    v,
-			IsClosed:  k.X,
+			IsClosed:  isClosed,
 			EventTime: eventTime,
 			LocalTime: localTime,
 		}:
