@@ -10,8 +10,6 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// Normalizer 将 Binance 原始 JSON 解析为内部类型
-
 type Channels struct {
 	ETHAggTrade  chan *AggTrade
 	ETHDepth     chan *DepthUpdate
@@ -36,28 +34,69 @@ func NewChannels() *Channels {
 
 func MakeAggTradeHandler(ch chan<- *AggTrade) func(json.RawMessage, int64) {
 	return func(data json.RawMessage, localTime int64) {
-		raw, err := parseAggTrade(data)
+		fields, err := objectFields(data)
 		if err != nil {
 			log.Warn().Err(err).Msg("aggTrade parse failed")
 			return
 		}
-		price, err1 := decimal.NewFromString(raw.Price)
-		qty, err2 := decimal.NewFromString(raw.Quantity)
+		eventTime, err := int64Field(fields, "E")
+		if err != nil {
+			log.Warn().Err(err).Msg("aggTrade parse failed")
+			return
+		}
+		aggTradeID, err := int64Field(fields, "a")
+		if err != nil {
+			log.Warn().Err(err).Msg("aggTrade parse failed")
+			return
+		}
+		firstTradeID, err := int64Field(fields, "f")
+		if err != nil {
+			log.Warn().Err(err).Msg("aggTrade parse failed")
+			return
+		}
+		lastTradeID, err := int64Field(fields, "l")
+		if err != nil {
+			log.Warn().Err(err).Msg("aggTrade parse failed")
+			return
+		}
+		priceStr, err := stringField(fields, "p")
+		if err != nil {
+			log.Warn().Err(err).Msg("aggTrade parse failed")
+			return
+		}
+		qtyStr, err := stringField(fields, "q")
+		if err != nil {
+			log.Warn().Err(err).Msg("aggTrade parse failed")
+			return
+		}
+		symbol, err := stringField(fields, "s")
+		if err != nil {
+			log.Warn().Err(err).Msg("aggTrade parse failed")
+			return
+		}
+		isBuyerMaker, err := boolField(fields, "m")
+		if err != nil {
+			log.Warn().Err(err).Msg("aggTrade parse failed")
+			return
+		}
+
+		price, err1 := decimal.NewFromString(priceStr)
+		qty, err2 := decimal.NewFromString(qtyStr)
 		if err1 != nil || err2 != nil {
 			log.Warn().Msg("aggTrade decimal parse failed")
 			return
 		}
 		select {
 		case ch <- &AggTrade{
-			Symbol:       raw.Symbol,
-			AggTradeID:   raw.AggTradeID,
+			Symbol:       symbol,
+			AggTradeID:   aggTradeID,
 			Price:        price,
 			Quantity:     qty,
-			FirstTradeID: raw.FirstTradeID,
-			LastTradeID:  raw.LastTradeID,
-			EventTime:    raw.EventTime,
+			FirstTradeID: firstTradeID,
+			LastTradeID:  lastTradeID,
+			EventTime:    eventTime,
 			LocalTime:    localTime,
-			IsBuyerMaker: raw.IsBuyerMaker,
+			IsBuyerMaker: isBuyerMaker,
 		}:
 		default:
 			log.Warn().Msg("aggTrade channel full, dropping")
@@ -65,72 +104,186 @@ func MakeAggTradeHandler(ch chan<- *AggTrade) func(json.RawMessage, int64) {
 	}
 }
 
-type rawAggTrade struct {
-	EventTime    int64
-	TradeTime    int64
-	AggTradeID   int64
-	Price        string
-	Quantity     string
-	FirstTradeID int64
-	LastTradeID  int64
-	IsBuyerMaker bool
-	Symbol       string
+func MakeDepthHandler(ch chan<- *DepthUpdate) func(json.RawMessage, int64) {
+	return func(data json.RawMessage, localTime int64) {
+		fields, err := objectFields(data)
+		if err != nil {
+			log.Warn().Err(err).Msg("depth parse failed")
+			return
+		}
+		eventTime, err := int64Field(fields, "E")
+		if err != nil {
+			log.Warn().Err(err).Msg("depth parse failed")
+			return
+		}
+		firstUpdateID, err := int64Field(fields, "U")
+		if err != nil {
+			log.Warn().Err(err).Msg("depth parse failed")
+			return
+		}
+		finalUpdateID, err := int64Field(fields, "u")
+		if err != nil {
+			log.Warn().Err(err).Msg("depth parse failed")
+			return
+		}
+		bidsRaw, err := levelsField(fields, "b")
+		if err != nil {
+			log.Warn().Err(err).Msg("depth parse failed")
+			return
+		}
+		asksRaw, err := levelsField(fields, "a")
+		if err != nil {
+			log.Warn().Err(err).Msg("depth parse failed")
+			return
+		}
+		symbol, err := stringField(fields, "s")
+		if err != nil {
+			log.Warn().Err(err).Msg("depth parse failed")
+			return
+		}
+
+		select {
+		case ch <- &DepthUpdate{
+			Symbol:        symbol,
+			FirstUpdateID: firstUpdateID,
+			FinalUpdateID: finalUpdateID,
+			Bids:          parseLevels(bidsRaw),
+			Asks:          parseLevels(asksRaw),
+			EventTime:     eventTime,
+			LocalTime:     localTime,
+		}:
+		default:
+			log.Warn().Msg("depth channel full, dropping")
+		}
+	}
 }
 
-func parseAggTrade(data json.RawMessage) (rawAggTrade, error) {
+func MakeMarkPriceHandler(ch chan<- *MarkPrice) func(json.RawMessage, int64) {
+	return func(data json.RawMessage, localTime int64) {
+		fields, err := objectFields(data)
+		if err != nil {
+			log.Warn().Err(err).Msg("markPrice parse failed")
+			return
+		}
+		eventTime, err := int64Field(fields, "E")
+		if err != nil {
+			log.Warn().Err(err).Msg("markPrice parse failed")
+			return
+		}
+		nextFundingTime, err := int64Field(fields, "T")
+		if err != nil {
+			log.Warn().Err(err).Msg("markPrice parse failed")
+			return
+		}
+		symbol, err := stringField(fields, "s")
+		if err != nil {
+			log.Warn().Err(err).Msg("markPrice parse failed")
+			return
+		}
+		markPriceStr, err := stringField(fields, "p")
+		if err != nil {
+			log.Warn().Err(err).Msg("markPrice parse failed")
+			return
+		}
+		indexPriceStr, err := stringField(fields, "i")
+		if err != nil {
+			log.Warn().Err(err).Msg("markPrice parse failed")
+			return
+		}
+		fundingRateStr, err := stringField(fields, "r")
+		if err != nil {
+			log.Warn().Err(err).Msg("markPrice parse failed")
+			return
+		}
+
+		mp, _ := decimal.NewFromString(markPriceStr)
+		ip, _ := decimal.NewFromString(indexPriceStr)
+		fr, _ := decimal.NewFromString(fundingRateStr)
+		select {
+		case ch <- &MarkPrice{
+			Symbol:          symbol,
+			MarkPrice:       mp,
+			IndexPrice:      ip,
+			FundingRate:     fr,
+			NextFundingTime: nextFundingTime,
+			EventTime:       eventTime,
+			LocalTime:       localTime,
+		}:
+		default:
+			log.Warn().Msg("markPrice channel full, dropping")
+		}
+	}
+}
+
+func MakeKlineHandler(ch chan<- *Kline) func(json.RawMessage, int64) {
+	return func(data json.RawMessage, localTime int64) {
+		fields, err := objectFields(data)
+		if err != nil {
+			log.Warn().Err(err).Msg("kline parse failed")
+			return
+		}
+		eventTime, err := int64Field(fields, "E")
+		if err != nil {
+			log.Warn().Err(err).Msg("kline parse failed")
+			return
+		}
+		symbol, err := stringField(fields, "s")
+		if err != nil {
+			log.Warn().Err(err).Msg("kline parse failed")
+			return
+		}
+		klineRaw, ok := fields["k"]
+		if !ok {
+			log.Warn().Err(fmt.Errorf("missing field %q", "k")).Msg("kline parse failed")
+			return
+		}
+		var k struct {
+			T  int64  `json:"t"`
+			T2 int64  `json:"T"`
+			I  string `json:"i"`
+			O  string `json:"o"`
+			H  string `json:"h"`
+			L  string `json:"l"`
+			C  string `json:"c"`
+			V  string `json:"v"`
+			X  bool   `json:"x"`
+		}
+		if err := json.Unmarshal(klineRaw, &k); err != nil {
+			log.Warn().Err(err).Msg("kline parse failed")
+			return
+		}
+
+		o, _ := decimal.NewFromString(k.O)
+		h, _ := decimal.NewFromString(k.H)
+		l, _ := decimal.NewFromString(k.L)
+		c, _ := decimal.NewFromString(k.C)
+		v, _ := decimal.NewFromString(k.V)
+		select {
+		case ch <- &Kline{
+			Symbol:    symbol,
+			Interval:  k.I,
+			OpenTime:  k.T,
+			CloseTime: k.T2,
+			Open:      o,
+			High:      h,
+			Low:       l,
+			Close:     c,
+			Volume:    v,
+			IsClosed:  k.X,
+			EventTime: eventTime,
+			LocalTime: localTime,
+		}:
+		default:
+		}
+	}
+}
+
+func objectFields(data json.RawMessage) (map[string]json.RawMessage, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
-		return rawAggTrade{}, err
+		return nil, err
 	}
-
-	eventTime, err := int64Field(fields, "E")
-	if err != nil {
-		return rawAggTrade{}, err
-	}
-	tradeTime, err := int64Field(fields, "T")
-	if err != nil {
-		return rawAggTrade{}, err
-	}
-	aggTradeID, err := int64Field(fields, "a")
-	if err != nil {
-		return rawAggTrade{}, err
-	}
-	firstTradeID, err := int64Field(fields, "f")
-	if err != nil {
-		return rawAggTrade{}, err
-	}
-	lastTradeID, err := int64Field(fields, "l")
-	if err != nil {
-		return rawAggTrade{}, err
-	}
-	price, err := stringField(fields, "p")
-	if err != nil {
-		return rawAggTrade{}, err
-	}
-	qty, err := stringField(fields, "q")
-	if err != nil {
-		return rawAggTrade{}, err
-	}
-	symbol, err := stringField(fields, "s")
-	if err != nil {
-		return rawAggTrade{}, err
-	}
-	isBuyerMaker, err := boolField(fields, "m")
-	if err != nil {
-		return rawAggTrade{}, err
-	}
-
-	return rawAggTrade{
-		EventTime:    eventTime,
-		TradeTime:    tradeTime,
-		AggTradeID:   aggTradeID,
-		Price:        price,
-		Quantity:     qty,
-		FirstTradeID: firstTradeID,
-		LastTradeID:  lastTradeID,
-		IsBuyerMaker: isBuyerMaker,
-		Symbol:       symbol,
-	}, nil
+	return fields, nil
 }
 
 func int64Field(fields map[string]json.RawMessage, key string) (int64, error) {
@@ -177,116 +330,16 @@ func boolField(fields map[string]json.RawMessage, key string) (bool, error) {
 	return b, nil
 }
 
-func MakeDepthHandler(ch chan<- *DepthUpdate) func(json.RawMessage, int64) {
-	return func(data json.RawMessage, localTime int64) {
-		var raw struct {
-			E  int64      `json:"E"`
-			U  int64      `json:"U"`
-			U2 int64      `json:"u"` // FinalUpdateID（小写字段不能被 json 反序列化）
-			B  [][]string `json:"b"`
-			A  [][]string `json:"a"`
-			S  string     `json:"s"`
-		}
-		if err := json.Unmarshal(data, &raw); err != nil {
-			log.Warn().Err(err).Msg("depth parse failed")
-			return
-		}
-		bids := parseLevels(raw.B)
-		asks := parseLevels(raw.A)
-		select {
-		case ch <- &DepthUpdate{
-			Symbol:        raw.S,
-			FirstUpdateID: raw.U,
-			FinalUpdateID: raw.U2,
-			Bids:          bids,
-			Asks:          asks,
-			EventTime:     raw.E,
-			LocalTime:     localTime,
-		}:
-		default:
-			log.Warn().Msg("depth channel full, dropping")
-		}
+func levelsField(fields map[string]json.RawMessage, key string) ([][]string, error) {
+	raw, ok := fields[key]
+	if !ok {
+		return nil, fmt.Errorf("missing field %q", key)
 	}
-}
-
-func MakeMarkPriceHandler(ch chan<- *MarkPrice) func(json.RawMessage, int64) {
-	return func(data json.RawMessage, localTime int64) {
-		var raw struct {
-			E int64  `json:"E"`
-			S string `json:"s"`
-			P string `json:"p"` // mark price
-			I string `json:"i"` // index price
-			R string `json:"r"` // funding rate
-			T int64  `json:"T"` // next funding time
-		}
-		if err := json.Unmarshal(data, &raw); err != nil {
-			log.Warn().Err(err).Msg("markPrice parse failed")
-			return
-		}
-		mp, _ := decimal.NewFromString(raw.P)
-		ip, _ := decimal.NewFromString(raw.I)
-		fr, _ := decimal.NewFromString(raw.R)
-		select {
-		case ch <- &MarkPrice{
-			Symbol:          raw.S,
-			MarkPrice:       mp,
-			IndexPrice:      ip,
-			FundingRate:     fr,
-			NextFundingTime: raw.T,
-			EventTime:       raw.E,
-			LocalTime:       localTime,
-		}:
-		default:
-			log.Warn().Msg("markPrice channel full, dropping")
-		}
+	var levels [][]string
+	if err := json.Unmarshal(raw, &levels); err != nil {
+		return nil, fmt.Errorf("field %q must be price levels", key)
 	}
-}
-
-func MakeKlineHandler(ch chan<- *Kline) func(json.RawMessage, int64) {
-	return func(data json.RawMessage, localTime int64) {
-		var raw struct {
-			E int64  `json:"E"`
-			S string `json:"s"`
-			K struct {
-				T  int64  `json:"t"`
-				T2 int64  `json:"T"`
-				I  string `json:"i"`
-				O  string `json:"o"`
-				H  string `json:"h"`
-				L  string `json:"l"`
-				C  string `json:"c"`
-				V  string `json:"v"`
-				X  bool   `json:"x"`
-			} `json:"k"`
-		}
-		if err := json.Unmarshal(data, &raw); err != nil {
-			log.Warn().Err(err).Msg("kline parse failed")
-			return
-		}
-		k := raw.K
-		o, _ := decimal.NewFromString(k.O)
-		h, _ := decimal.NewFromString(k.H)
-		l, _ := decimal.NewFromString(k.L)
-		c, _ := decimal.NewFromString(k.C)
-		v, _ := decimal.NewFromString(k.V)
-		select {
-		case ch <- &Kline{
-			Symbol:    raw.S,
-			Interval:  k.I,
-			OpenTime:  k.T,
-			CloseTime: k.T2,
-			Open:      o,
-			High:      h,
-			Low:       l,
-			Close:     c,
-			Volume:    v,
-			IsClosed:  k.X,
-			EventTime: raw.E,
-			LocalTime: localTime,
-		}:
-		default:
-		}
-	}
+	return levels, nil
 }
 
 func parseLevels(raw [][]string) []PriceLevel {
@@ -305,7 +358,6 @@ func parseLevels(raw [][]string) []PriceLevel {
 	return levels
 }
 
-// ValidateLatency 检查消息延迟，返回是否有效
 func ValidateLatency(eventTimeMs, localTimeMs int64, thresholdMs int64) bool {
 	latency := localTimeMs - eventTimeMs
 	return latency <= thresholdMs
