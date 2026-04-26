@@ -1,0 +1,60 @@
+trading:
+  symbol: "ETHUSDT"
+  lot_size: "0.01"
+  leverage: 3
+  margin_type: "ISOLATED"
+
+exits:
+  take_profit_pct: 0.008
+  stop_loss_pct: 0.004
+  max_holding_time_sec: 14400
+  min_holding_time_sec: 60
+  cooldown_after_exit_sec: 30
+
+engines:
+  trend:
+    enabled: true
+    confidence_threshold: 0.60
+    oi_delta_threshold: 0.005
+  squeeze:
+    enabled: true
+    confidence_threshold: 0.70
+    basis_zscore_threshold: 2.5
+  transition:
+    enabled: true
+    confidence_threshold: 0.65
+    vol_compression_ratio: 0.6
+
+risk:
+  max_slippage_bps: 8
+  btc_correlation_lock_threshold: 0.90
+  btc_dependency_weight: 0.85
+  daily_loss_limit_pct: 0.05
+  consecutive_loss_limit: 5
+
+webui:
+  addr: ":8080"
+
+sampling:
+  fast_interval_ms: 200
+  mid_interval_ms: 1000
+  slow_interval_ms: 30000
+  oi_poll_interval_ms: 5000
+
+state_machine:
+  stress_vol_multiplier: 2.5
+  degradation_latency_breach_rate: 0.10
+  failure_data_gap_sec: 5
+
+execution:
+  use_maker_mode: false
+  order_timeout_ms: 5000
+  reconciliation_interval_sec: 10
+  max_order_retry: 3
+
+binance:
+  api_key: "${BINANCE_API_KEY}"
+  api_secret: "${BINANCE_API_SECRET}"
+  ws_endpoint: "wss://fstream.binance.com"
+  rest_endpoint: "https://fapi.binance.com"
+  testnet: false
