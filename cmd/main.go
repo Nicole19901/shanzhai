@@ -97,15 +97,15 @@ func main() {
 	chs := datafeed.NewChannels()
 
 	ethHandlers := map[string]datafeed.StreamHandler{
-		"ethusdt@aggTrade":     datafeed.MakeAggTradeHandler(chs.ETHAggTrade),
+		"ethusdt@aggtrade":     datafeed.MakeAggTradeHandler(chs.ETHAggTrade),
 		"ethusdt@depth@100ms":  datafeed.MakeDepthHandler(chs.ETHDepth),
 		"ethusdt@kline_1s":     datafeed.MakeKlineHandler(chs.ETHKline1s),
 		"ethusdt@kline_1m":     datafeed.MakeKlineHandler(chs.ETHKline1m),
-		"ethusdt@markPrice@1s": datafeed.MakeMarkPriceHandler(chs.ETHMarkPrice),
+		"ethusdt@markprice@1s": datafeed.MakeMarkPriceHandler(chs.ETHMarkPrice),
 	}
 	btcHandlers := map[string]datafeed.StreamHandler{
-		"btcusdt@aggTrade":     datafeed.MakeAggTradeHandler(chs.BTCAggTrade),
-		"btcusdt@markPrice@1s": datafeed.MakeMarkPriceHandler(chs.BTCMarkPrice),
+		"btcusdt@aggtrade":     datafeed.MakeAggTradeHandler(chs.BTCAggTrade),
+		"btcusdt@markprice@1s": datafeed.MakeMarkPriceHandler(chs.BTCMarkPrice),
 	}
 
 	ethWS, err := datafeed.NewWSClient(cfg.Binance.WSEndpoint,

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,10 +14,10 @@ import (
 )
 
 const (
-	pingInterval  = 30 * time.Second
-	maxStreams    = 5
-	backoffBase   = time.Second
-	backoffMax    = 30 * time.Second
+	pingInterval = 30 * time.Second
+	maxStreams   = 5
+	backoffBase  = time.Second
+	backoffMax   = 30 * time.Second
 )
 
 // WSMessage 原始 Binance WS 消息
@@ -138,10 +139,19 @@ func (c *WSClient) dispatch(raw wsRaw) {
 	}
 	c.mu.RLock()
 	handler, ok := c.handlers[msg.Stream]
+	if !ok {
+		handler, ok = c.handlers[strings.ToLower(msg.Stream)]
+	}
 	c.mu.RUnlock()
 	if ok {
 		handler(msg.Data, raw.localTime)
+		return
 	}
+	if msg.Stream == "" {
+		log.Warn().RawJSON("message", raw.data).Msg("ws message missing stream, skipping")
+		return
+	}
+	log.Warn().Str("stream", msg.Stream).Msg("ws stream has no handler, skipping")
 }
 
 func joinStreams(streams []string) string {
