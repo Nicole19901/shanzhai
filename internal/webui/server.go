@@ -316,6 +316,7 @@ const adminHTML = `<!DOCTYPE html>
 <div class="grid" id="grid"></div>
 <div class="actions">
   <button class="save" type="submit">保存参数</button>
+  <button class="restart" type="button" id="testParamsBtn">测试开单参数</button>
   <button class="init" type="button" id="initBtn">初始化为当前参数</button>
   <button class="reset" type="button" id="resetBtn">恢复初始化值</button>
   <button class="start" type="button" id="startBtn">启动系统</button>
@@ -333,6 +334,7 @@ const adminHTML = `<!DOCTYPE html>
   <div class="actions">
     <button class="restart" type="button" id="verifyKeyBtn">验证余额</button>
     <button class="save" type="button" id="applyKeyBtn">验证并应用新密钥</button>
+    <button class="reset" type="button" id="clearBalanceBtn">清除余额</button>
   </div>
   <div id="balanceBox" class="balance"></div>
 </section>
@@ -390,6 +392,7 @@ function collect(){const o={};for(const it of fields){const el=document.getEleme
 function msg(t,ok){const m=document.getElementById('msg');m.textContent=t;m.className='msg '+(ok?'ok':'err');setTimeout(()=>m.className='msg',4000)}
 for(const it of fields){document.getElementById(it[0]).addEventListener('input',()=>refreshLabel(it))}
 document.getElementById('form').addEventListener('submit',async e=>{e.preventDefault();const p=collect();if(p.take_profit_pct/p.stop_loss_pct<1.5){msg('盈亏比必须 >= 1.5',false);return}const r=await fetch('/api/params',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok){const d=await r.json();populate(d.current);msg('参数已保存',true)}else msg('保存失败: '+await r.text(),false)});
+document.getElementById('testParamsBtn').onclick=async()=>{const p=Object.assign(collect(),{lot_size:'0.001',take_profit_pct:0.002,stop_loss_pct:0.001,cooldown_after_exit_sec:5,min_holding_time_sec:0,max_holding_time_sec:600,trend_enabled:true,trend_confidence:0.30,oi_delta_threshold:0.001,squeeze_enabled:true,squeeze_confidence:0.40,basis_zscore_threshold:1.0,transition_enabled:true,transition_confidence:0.30,vol_compression_ratio:0.90,max_slippage_bps:20});populate(p);const r=await fetch('/api/params',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok){const d=await r.json();populate(d.current);msg('测试开单参数已保存',true)}else msg('测试参数保存失败: '+await r.text(),false)};
 document.getElementById('resetBtn').onclick=async()=>{if(!confirm('恢复到初始化参数？'))return;const r=await fetch('/api/params/reset',{method:'POST'});if(r.ok){const d=await r.json();populate(d.current);msg('已恢复初始化值',true)}else msg('恢复失败',false)};
 document.getElementById('initBtn').onclick=async()=>{if(!confirm('把当前参数保存为新的初始化值？'))return;const r=await fetch('/api/params/initialize',{method:'POST'});if(r.ok){msg('当前参数已保存为初始化值',true)}else msg('初始化失败',false)};
 document.getElementById('startBtn').onclick=async()=>{if(!confirm('确认启动系统服务？'))return;const r=await fetch('/api/control/start',{method:'POST'});msg(r.ok?'已发送启动命令':'启动命令失败',r.ok)};
@@ -400,9 +403,11 @@ function renderBalances(list,applied){const box=document.getElementById('balance
 let keyVerifyNoticeShown=false;
 let keyApplyNoticeShown=false;
 let keyApplyConfirmShown=false;
-async function submitKeys(path,applied){const p=keyPayload();if(!p.api_key||!p.api_secret){msg('请填写 API Key 和 API Secret',false);return}const box=document.getElementById('balanceBox');box.textContent='正在验证余额...';const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok){const d=await r.json();renderBalances(d.balances||[],applied);if(applied){if(!keyApplyNoticeShown){msg('新密钥已验证并应用',true);keyApplyNoticeShown=true}}else if(!keyVerifyNoticeShown){msg('密钥验证通过',true);keyVerifyNoticeShown=true}}else{const t=await r.text();box.textContent='验证失败: '+t;msg('密钥验证失败',false)}}
+let balanceShown=false;
+async function submitKeys(path,applied){const p=keyPayload();if(!p.api_key||!p.api_secret){msg('请填写 API Key 和 API Secret',false);return}const box=document.getElementById('balanceBox');if(!balanceShown)box.textContent='正在验证余额...';const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok){const d=await r.json();if(!balanceShown){renderBalances(d.balances||[],applied);balanceShown=true}else{box.textContent=applied?'已应用新密钥':'密钥验证通过'}if(applied){if(!keyApplyNoticeShown){msg('新密钥已验证并应用',true);keyApplyNoticeShown=true}}else if(!keyVerifyNoticeShown){msg('密钥验证通过',true);keyVerifyNoticeShown=true}}else{const t=await r.text();box.textContent='验证失败: '+t;msg('密钥验证失败',false)}}
 document.getElementById('verifyKeyBtn').onclick=()=>submitKeys('/api/credentials/verify',false);
 document.getElementById('applyKeyBtn').onclick=()=>{if(!keyApplyConfirmShown){if(!confirm('确认验证并应用这组新密钥到当前运行中的交易客户端？'))return;keyApplyConfirmShown=true}submitKeys('/api/credentials/apply',true)};
+document.getElementById('clearBalanceBtn').onclick=()=>{document.getElementById('balanceBox').textContent='';balanceShown=false;keyVerifyNoticeShown=false;keyApplyNoticeShown=false;keyApplyConfirmShown=false};
 function formatLog(e){const f=e.fields||{};return [e.message,f.engine&&('引擎 '+f.engine),f.dir&&('方向 '+f.dir),f.qty&&('数量 '+f.qty),f.entry&&('开仓 '+f.entry),f.exit&&('平仓 '+f.exit),f.pnl_pct!==undefined&&('PnL '+(Number(f.pnl_pct)*100).toFixed(4)+'%'),f.reason&&('原因 '+f.reason),f.state&&('状态 '+f.state),f.error&&('错误 '+f.error),f.est_slip_bps!==undefined&&('滑点 '+Number(f.est_slip_bps).toFixed(2)+' bps')].filter(Boolean).join(' | ')}
 function renderLogBox(id,entries,emptyText){const box=document.getElementById(id);box.innerHTML='';if(!entries.length){box.innerHTML='<div class="row"><div class="details">'+emptyText+'</div></div>';return}for(const e of entries.slice().reverse()){const row=document.createElement('div');row.className='row';row.innerHTML='<div class="time">'+new Date(e.time).toLocaleString()+'</div><div class="type '+e.type+'">'+e.type+'</div><div class="details">'+formatLog(e)+'</div>';box.appendChild(row)}}
 async function loadLogs(){const now='最后刷新 '+new Date().toLocaleTimeString();try{const r=await fetch('/api/logs');const d=await r.json();renderLogBox('tradeLogs',d.trades||[],'暂无开单/平仓记录');renderLogBox('systemLogs',d.system||[],'暂无系统报错');renderLogBox('rejectLogs',d.rejects||[],'暂无拒绝记录');document.getElementById('tradeHint').textContent=now;document.getElementById('systemHint').textContent=now;document.getElementById('rejectHint').textContent=now}catch(e){document.getElementById('tradeHint').textContent='日志加载失败';document.getElementById('systemHint').textContent='日志加载失败';document.getElementById('rejectHint').textContent='日志加载失败'}}
