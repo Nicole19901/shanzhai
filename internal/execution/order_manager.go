@@ -24,8 +24,16 @@ func NewOrderManager(rest *datafeed.RESTClient, cfg *config.Config, m *telemetry
 	return &OrderManager{rest: rest, cfg: cfg, metrics: m}
 }
 
+func (om *OrderManager) HasCredentials() bool {
+	return om.rest.HasCredentials()
+}
+
 // OpenMarket 市价开仓，返回成交均价
 func (om *OrderManager) OpenMarket(ctx context.Context, dir datafeed.Direction, qty decimal.Decimal) (decimal.Decimal, string, error) {
+	if !om.HasCredentials() {
+		om.metrics.OrderSubmitted("MARKET_OPEN", "failed")
+		return decimal.Zero, "", fmt.Errorf("open market order: missing Binance API credentials")
+	}
 	side := "BUY"
 	if dir == datafeed.DirectionShort {
 		side = "SELL"
@@ -55,6 +63,10 @@ func (om *OrderManager) OpenMarket(ctx context.Context, dir datafeed.Direction, 
 
 // PlaceStopLoss reduceOnly STOP_MARKET 止损兜底
 func (om *OrderManager) PlaceStopLoss(ctx context.Context, dir datafeed.Direction, qty, stopPrice decimal.Decimal) (string, error) {
+	if !om.HasCredentials() {
+		om.metrics.OrderSubmitted("STOP_MARKET", "failed")
+		return "", fmt.Errorf("place stop loss: missing Binance API credentials")
+	}
 	side := "SELL"
 	if dir == datafeed.DirectionShort {
 		side = "BUY"
@@ -84,6 +96,10 @@ func (om *OrderManager) PlaceStopLoss(ctx context.Context, dir datafeed.Directio
 
 // PlaceTakeProfit reduceOnly TAKE_PROFIT_MARKET 止盈兜底
 func (om *OrderManager) PlaceTakeProfit(ctx context.Context, dir datafeed.Direction, qty, targetPrice decimal.Decimal) (string, error) {
+	if !om.HasCredentials() {
+		om.metrics.OrderSubmitted("TP_MARKET", "failed")
+		return "", fmt.Errorf("place take profit: missing Binance API credentials")
+	}
 	side := "SELL"
 	if dir == datafeed.DirectionShort {
 		side = "BUY"
@@ -113,6 +129,10 @@ func (om *OrderManager) PlaceTakeProfit(ctx context.Context, dir datafeed.Direct
 
 // CloseMarket 市价全平（reduceOnly）
 func (om *OrderManager) CloseMarket(ctx context.Context, dir datafeed.Direction, qty decimal.Decimal) (decimal.Decimal, error) {
+	if !om.HasCredentials() {
+		om.metrics.OrderSubmitted("MARKET_CLOSE", "failed")
+		return decimal.Zero, fmt.Errorf("close market: missing Binance API credentials")
+	}
 	side := "SELL"
 	if dir == datafeed.DirectionShort {
 		side = "BUY"
@@ -150,6 +170,10 @@ func (om *OrderManager) CancelOrder(ctx context.Context, orderID string) {
 	if orderID == "" {
 		return
 	}
+	if !om.HasCredentials() {
+		log.Warn().Str("orderID", orderID).Msg("cancel order skipped: missing Binance API credentials")
+		return
+	}
 	if err := om.rest.CancelOrder(ctx, om.cfg.Trading.Symbol, orderID); err != nil {
 		log.Error().Err(err).Str("orderID", orderID).Msg("cancel order failed (warning only)")
 	}
@@ -157,5 +181,8 @@ func (om *OrderManager) CancelOrder(ctx context.Context, orderID string) {
 
 // CancelAll 取消所有未成交订单
 func (om *OrderManager) CancelAll(ctx context.Context) error {
+	if !om.HasCredentials() {
+		return fmt.Errorf("cancel all orders: missing Binance API credentials")
+	}
 	return om.rest.CancelAllOrders(ctx, om.cfg.Trading.Symbol)
 }

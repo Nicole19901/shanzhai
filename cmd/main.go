@@ -47,7 +47,11 @@ func main() {
 	defer cancel()
 
 	// ── 3. Boot checklist ─────────────────────────────────────────
-	bootCheck(ctx, rest, cfg)
+	if rest.HasCredentials() {
+		bootCheck(ctx, rest, cfg)
+	} else {
+		log.Warn().Msg("boot check skipped: missing Binance API credentials; webui and market-data mode only")
+	}
 
 	// ── 4. 初始化组件 ────────────────────────────────────────────
 	metrics := telemetry.NewMetrics()
@@ -125,15 +129,29 @@ func main() {
 	var ethMsgCount, btcMsgCount int64
 	warmupDone := make(chan struct{})
 	go func() {
-		time.Sleep(30 * time.Second)
-		eth := atomic.LoadInt64(&ethMsgCount)
-		btc := atomic.LoadInt64(&btcMsgCount)
-		if eth < 100 || btc < 100 {
-			log.Fatal().Int64("eth_msgs", eth).Int64("btc_msgs", btc).
-				Msg("boot check failed: insufficient data stream messages")
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			<-ticker.C
+			eth := atomic.LoadInt64(&ethMsgCount)
+			btc := atomic.LoadInt64(&btcMsgCount)
+			if eth < 100 || btc < 100 {
+				log.Error().Int64("eth_msgs", eth).Int64("btc_msgs", btc).
+					Msg("data stream warmup waiting: insufficient messages")
+				eventLog.AddSystem("DATA_WARMUP_WAIT", "data stream warmup waiting: insufficient messages", map[string]interface{}{
+					"eth_msgs": eth,
+					"btc_msgs": btc,
+				})
+				continue
+			}
+			log.Info().Int64("eth_msgs", eth).Int64("btc_msgs", btc).Msg("data streams stable")
+			eventLog.AddSystem("DATA_READY", "data streams stable", map[string]interface{}{
+				"eth_msgs": eth,
+				"btc_msgs": btc,
+			})
+			close(warmupDone)
+			return
 		}
-		log.Info().Int64("eth_msgs", eth).Int64("btc_msgs", btc).Msg("data streams stable")
-		close(warmupDone)
 	}()
 
 	// 共享的最新市场状态（原子写入，引擎评估时读取）
@@ -524,6 +542,10 @@ func main() {
 }
 
 func bootCheck(ctx context.Context, rest *datafeed.RESTClient, cfg *config.Config) {
+	if !rest.HasCredentials() {
+		log.Warn().Msg("boot: missing Binance API credentials, skipping signed account checks")
+		return
+	}
 	risks, err := rest.PositionRisk(ctx, cfg.Trading.Symbol)
 	if err != nil {
 		log.Fatal().Err(err).Msg("boot: cannot fetch position risk")

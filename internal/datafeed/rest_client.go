@@ -46,6 +46,12 @@ func (c *RESTClient) UpdateCredentials(apiKey, apiSecret string) {
 	c.mu.Unlock()
 }
 
+func (c *RESTClient) HasCredentials() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.apiKey != "" && c.apiSecret != ""
+}
+
 // OpenInterest GET /fapi/v1/openInterest
 func (c *RESTClient) OpenInterest(ctx context.Context, symbol string) (decimal.Decimal, error) {
 	resp, err := c.get(ctx, "/fapi/v1/openInterest", map[string]string{"symbol": symbol})
