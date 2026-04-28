@@ -187,6 +187,17 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete {
+		category := r.URL.Query().Get("category")
+		switch category {
+		case "trade", "system", "reject", "all":
+			s.events.ClearCategory(category)
+			writeJSON(w, map[string]string{"status": "cleared", "category": category})
+		default:
+			http.Error(w, "invalid category", http.StatusBadRequest)
+		}
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -327,15 +338,15 @@ const adminHTML = `<!DOCTYPE html>
 </section>
 <section class="panel grid">
   <div class="card">
-    <div class="logbar"><h2>交易状态</h2><span class="muted" id="tradeHint">自动刷新</span></div>
+    <div class="logbar"><h2>交易状态</h2><span class="muted" id="tradeHint">自动刷新</span><button class="reset" type="button" id="clearTradeBtn">清除</button></div>
     <div class="loglist" id="tradeLogs"></div>
   </div>
   <div class="card">
-    <div class="logbar"><h2>系统日志</h2><span class="muted" id="systemHint">自动刷新</span></div>
+    <div class="logbar"><h2>系统日志</h2><span class="muted" id="systemHint">自动刷新</span><button class="reset" type="button" id="clearSystemBtn">清除</button></div>
     <div class="loglist" id="systemLogs"></div>
   </div>
   <div class="card">
-    <div class="logbar"><h2>拒绝原因</h2><span class="muted" id="rejectHint">自动刷新</span></div>
+    <div class="logbar"><h2>拒绝原因</h2><span class="muted" id="rejectHint">自动刷新</span><button class="reset" type="button" id="clearRejectBtn">清除</button></div>
     <div class="loglist" id="rejectLogs"></div>
   </div>
 </section>
@@ -386,12 +397,19 @@ document.getElementById('restartBtn').onclick=async()=>{if(!confirm('确认重�
 document.getElementById('stopBtn').onclick=async()=>{if(!confirm('确认停止系统服务？停止后需要用 SSH 或服务器面板启动。'))return;const r=await fetch('/api/control/stop',{method:'POST'});msg(r.ok?'已发送停止命令':'停止命令失败',r.ok)};
 function keyPayload(){return {api_key:document.getElementById('apiKey').value.trim(),api_secret:document.getElementById('apiSecret').value.trim()}}
 function renderBalances(list,applied){const box=document.getElementById('balanceBox');if(!list||!list.length){box.textContent='验证通过，但未返回余额。';return}box.textContent=(applied?'已应用新密钥\n':'验证通过\n')+list.map(b=>b.asset+': balance='+b.balance+' available='+b.available_balance).join('\n')}
-async function submitKeys(path,applied){const p=keyPayload();if(!p.api_key||!p.api_secret){msg('请填写 API Key 和 API Secret',false);return}const box=document.getElementById('balanceBox');box.textContent='正在验证余额...';const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok){const d=await r.json();renderBalances(d.balances||[],applied);msg(applied?'新密钥已验证并应用':'密钥验证通过',true)}else{const t=await r.text();box.textContent='验证失败: '+t;msg('密钥验证失败',false)}}
+let keyVerifyNoticeShown=false;
+let keyApplyNoticeShown=false;
+let keyApplyConfirmShown=false;
+async function submitKeys(path,applied){const p=keyPayload();if(!p.api_key||!p.api_secret){msg('请填写 API Key 和 API Secret',false);return}const box=document.getElementById('balanceBox');box.textContent='正在验证余额...';const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok){const d=await r.json();renderBalances(d.balances||[],applied);if(applied){if(!keyApplyNoticeShown){msg('新密钥已验证并应用',true);keyApplyNoticeShown=true}}else if(!keyVerifyNoticeShown){msg('密钥验证通过',true);keyVerifyNoticeShown=true}}else{const t=await r.text();box.textContent='验证失败: '+t;msg('密钥验证失败',false)}}
 document.getElementById('verifyKeyBtn').onclick=()=>submitKeys('/api/credentials/verify',false);
-document.getElementById('applyKeyBtn').onclick=()=>{if(!confirm('确认验证并应用这组新密钥到当前运行中的交易客户端？'))return;submitKeys('/api/credentials/apply',true)};
+document.getElementById('applyKeyBtn').onclick=()=>{if(!keyApplyConfirmShown){if(!confirm('确认验证并应用这组新密钥到当前运行中的交易客户端？'))return;keyApplyConfirmShown=true}submitKeys('/api/credentials/apply',true)};
 function formatLog(e){const f=e.fields||{};return [e.message,f.engine&&('引擎 '+f.engine),f.dir&&('方向 '+f.dir),f.qty&&('数量 '+f.qty),f.entry&&('开仓 '+f.entry),f.exit&&('平仓 '+f.exit),f.pnl_pct!==undefined&&('PnL '+(Number(f.pnl_pct)*100).toFixed(4)+'%'),f.reason&&('原因 '+f.reason),f.state&&('状态 '+f.state),f.error&&('错误 '+f.error),f.est_slip_bps!==undefined&&('滑点 '+Number(f.est_slip_bps).toFixed(2)+' bps')].filter(Boolean).join(' | ')}
 function renderLogBox(id,entries,emptyText){const box=document.getElementById(id);box.innerHTML='';if(!entries.length){box.innerHTML='<div class="row"><div class="details">'+emptyText+'</div></div>';return}for(const e of entries.slice().reverse()){const row=document.createElement('div');row.className='row';row.innerHTML='<div class="time">'+new Date(e.time).toLocaleString()+'</div><div class="type '+e.type+'">'+e.type+'</div><div class="details">'+formatLog(e)+'</div>';box.appendChild(row)}}
 async function loadLogs(){const now='最后刷新 '+new Date().toLocaleTimeString();try{const r=await fetch('/api/logs');const d=await r.json();renderLogBox('tradeLogs',d.trades||[],'暂无开单/平仓记录');renderLogBox('systemLogs',d.system||[],'暂无系统报错');renderLogBox('rejectLogs',d.rejects||[],'暂无拒绝记录');document.getElementById('tradeHint').textContent=now;document.getElementById('systemHint').textContent=now;document.getElementById('rejectHint').textContent=now}catch(e){document.getElementById('tradeHint').textContent='日志加载失败';document.getElementById('systemHint').textContent='日志加载失败';document.getElementById('rejectHint').textContent='日志加载失败'}}
+async function clearLogs(category){const r=await fetch('/api/logs?category='+encodeURIComponent(category),{method:'DELETE'});if(r.ok){loadLogs()}else msg('清除日志失败: '+await r.text(),false)}
+document.getElementById('clearTradeBtn').onclick=()=>clearLogs('trade');
+document.getElementById('clearSystemBtn').onclick=()=>clearLogs('system');
+document.getElementById('clearRejectBtn').onclick=()=>clearLogs('reject');
 (async()=>{try{const r=await fetch('/api/params');const d=await r.json();populate(d.current)}catch(e){msg('加载参数失败: '+e,false)}loadLogs();setInterval(loadLogs,3000)})();
 </script>
 </body>

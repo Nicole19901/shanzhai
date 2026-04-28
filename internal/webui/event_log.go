@@ -79,3 +79,20 @@ func (l *EventLog) RecentByCategory(category string) []EventLogEntry {
 	}
 	return out
 }
+
+func (l *EventLog) ClearCategory(category string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if category == "all" {
+		l.entries = nil
+		return
+	}
+	kept := l.entries[:0]
+	for _, entry := range l.entries {
+		if entry.Category != category {
+			kept = append(kept, entry)
+		}
+	}
+	l.entries = kept
+}
