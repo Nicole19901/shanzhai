@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+
+	"github.com/yourorg/eth-perp-system/internal/datafeed"
 )
 
 const (
@@ -20,14 +23,15 @@ const (
 type Server struct {
 	params      *LiveParams
 	events      *EventLog
+	rest        *datafeed.RESTClient
 	serviceName string
 }
 
-func NewServer(params *LiveParams, events *EventLog, serviceName string) *Server {
+func NewServer(params *LiveParams, events *EventLog, rest *datafeed.RESTClient, serviceName string) *Server {
 	if serviceName == "" {
 		serviceName = "eth-perp-system"
 	}
-	return &Server{params: params, events: events, serviceName: serviceName}
+	return &Server{params: params, events: events, rest: rest, serviceName: serviceName}
 }
 
 func (s *Server) Listen(addr string) {
@@ -36,16 +40,78 @@ func (s *Server) Listen(addr string) {
 	mux.HandleFunc("/api/params", s.auth(s.handleParams))
 	mux.HandleFunc("/api/params/reset", s.auth(s.handleReset))
 	mux.HandleFunc("/api/params/initialize", s.auth(s.handleInitialize))
+	mux.HandleFunc("/api/credentials/verify", s.auth(s.handleCredentialVerify))
+	mux.HandleFunc("/api/credentials/apply", s.auth(s.handleCredentialApply))
 	mux.HandleFunc("/api/logs", s.auth(s.handleLogs))
+	mux.HandleFunc("/api/control/start", s.auth(s.handleStart))
 	mux.HandleFunc("/api/control/stop", s.auth(s.handleStop))
 	mux.HandleFunc("/api/control/restart", s.auth(s.handleRestart))
 
 	log.Info().Str("addr", addr).Msg("webui server starting")
+	if s.events != nil {
+		s.events.AddSystem("SYSTEM_START", "webui server starting", map[string]interface{}{"addr": addr})
+	}
 	go func() {
 		if err := http.ListenAndServe(addr, mux); err != nil {
 			log.Error().Err(err).Msg("webui server error")
 		}
 	}()
+}
+
+type credentialRequest struct {
+	APIKey    string `json:"api_key"`
+	APISecret string `json:"api_secret"`
+}
+
+func (s *Server) handleCredentialVerify(w http.ResponseWriter, r *http.Request) {
+	s.handleCredentials(w, r, false)
+}
+
+func (s *Server) handleCredentialApply(w http.ResponseWriter, r *http.Request) {
+	s.handleCredentials(w, r, true)
+}
+
+func (s *Server) handleCredentials(w http.ResponseWriter, r *http.Request, apply bool) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req credentialRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.APIKey == "" || req.APISecret == "" {
+		http.Error(w, "api_key and api_secret are required", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	probe := datafeed.NewRESTClient(s.rest.BaseURL(), req.APIKey, req.APISecret)
+	balances, err := probe.FuturesBalances(ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("webui: credential balance verification failed")
+		if s.events != nil {
+			s.events.AddSystem("KEY_VERIFY_FAILED", "credential balance verification failed", map[string]interface{}{"error": err.Error()})
+		}
+		http.Error(w, "verify failed: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if apply {
+		s.rest.UpdateCredentials(req.APIKey, req.APISecret)
+		log.Info().Msg("webui: runtime Binance credentials updated")
+		if s.events != nil {
+			s.events.AddSystem("KEY_APPLIED", "runtime Binance credentials updated after balance verification", nil)
+		}
+	} else if s.events != nil {
+		s.events.AddSystem("KEY_VERIFIED", "credential balance verification passed", nil)
+	}
+	writeJSON(w, map[string]interface{}{
+		"status":   "ok",
+		"applied":  apply,
+		"balances": balances,
+	})
 }
 
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
@@ -137,6 +203,10 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	s.handleControl(w, r, "stop")
 }
 
+func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
+	s.handleControl(w, r, "start")
+}
+
 func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 	s.handleControl(w, r, "restart")
 }
@@ -147,6 +217,9 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request, action st
 		return
 	}
 	log.Warn().Str("action", action).Str("service", s.serviceName).Msg("webui: service control requested")
+	if s.events != nil {
+		s.events.AddSystem("SERVICE_CONTROL", "service control requested", map[string]interface{}{"action": action, "service": s.serviceName})
+	}
 	writeJSON(w, map[string]string{"status": "accepted", "action": action})
 
 	go func() {
@@ -223,7 +296,7 @@ const adminHTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ETH-Perp 控制台</title>
 <style>
-*{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#101418;color:#e8edf2;padding:24px}.top{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:18px}h1{font-size:22px;margin:0;color:#f2f6fa}.badge{font-size:12px;color:#79c0ff;border:1px solid #27547a;border-radius:999px;padding:4px 9px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}.card{background:#171d23;border:1px solid #29333d;border-radius:8px;padding:16px}.card h2{font-size:14px;margin:0 0 12px;color:#a9b7c4}.field{margin-bottom:12px}.field label{display:flex;justify-content:space-between;gap:12px;font-size:13px;color:#d6dee6;margin-bottom:6px}.field span{color:#79c0ff;font-family:Consolas,monospace;white-space:nowrap}input{width:100%;background:#0d1116;border:1px solid #34414d;border-radius:5px;color:#e8edf2;padding:7px 9px}input[type=range]{padding:0;accent-color:#2f81f7}.check{display:flex;align-items:center;gap:8px;font-size:13px;color:#d6dee6}.check input{width:auto}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}button{border:0;border-radius:6px;padding:9px 14px;color:#fff;font-weight:600;cursor:pointer}.save{background:#238636}.init{background:#8957e5}.reset{background:#3b434c}.restart{background:#0969da}.stop{background:#da3633}.msg{display:none;margin-top:12px;border-radius:6px;padding:9px 12px;font-size:13px}.ok{display:block;background:#102b1a;color:#56d364;border:1px solid #238636}.err{display:block;background:#341416;color:#ff7b72;border:1px solid #8e2b31}.panel{margin-top:18px}.logbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px}.loglist{height:260px;overflow:auto;background:#0d1116;border:1px solid #29333d;border-radius:8px}.row{display:grid;grid-template-columns:170px 112px 1fr;gap:10px;padding:9px 12px;border-bottom:1px solid #202a33;font-size:13px}.row:last-child{border-bottom:0}.time{color:#8b949e}.type{font-family:Consolas,monospace;color:#79c0ff}.type.OPEN{color:#56d364}.type.CLOSE{color:#ffb86b}.type.ORDER_ERROR,.type.DATA_ERROR{color:#ff7b72}.type.OPEN_REJECTED,.type.SIGNAL_REJECTED{color:#d29922}.details{color:#d6dee6;word-break:break-word}.muted{color:#8b949e;font-size:13px}@media(max-width:760px){body{padding:14px}.top{align-items:flex-start;flex-direction:column}.row{grid-template-columns:1fr}.time,.type{font-size:12px}}
+*{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#101418;color:#e8edf2;padding:24px}.top{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:18px}h1{font-size:22px;margin:0;color:#f2f6fa}.badge{font-size:12px;color:#79c0ff;border:1px solid #27547a;border-radius:999px;padding:4px 9px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}.card{background:#171d23;border:1px solid #29333d;border-radius:8px;padding:16px}.card h2{font-size:14px;margin:0 0 12px;color:#a9b7c4}.field{margin-bottom:12px}.field label{display:flex;justify-content:space-between;gap:12px;font-size:13px;color:#d6dee6;margin-bottom:6px}.field span{color:#79c0ff;font-family:Consolas,monospace;white-space:nowrap}input{width:100%;background:#0d1116;border:1px solid #34414d;border-radius:5px;color:#e8edf2;padding:7px 9px}input[type=range]{padding:0;accent-color:#2f81f7}.check{display:flex;align-items:center;gap:8px;font-size:13px;color:#d6dee6}.check input{width:auto}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}button{border:0;border-radius:6px;padding:9px 14px;color:#fff;font-weight:600;cursor:pointer}.save{background:#238636}.init{background:#8957e5}.reset{background:#3b434c}.start{background:#1f883d}.restart{background:#0969da}.stop{background:#da3633}.keybox{margin-top:14px}.keygrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.balance{margin-top:10px;color:#d6dee6;font-family:Consolas,monospace;font-size:13px;white-space:pre-wrap}.msg{display:none;margin-top:12px;border-radius:6px;padding:9px 12px;font-size:13px}.ok{display:block;background:#102b1a;color:#56d364;border:1px solid #238636}.err{display:block;background:#341416;color:#ff7b72;border:1px solid #8e2b31}.panel{margin-top:18px}.logbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px}.loglist{height:260px;overflow:auto;background:#0d1116;border:1px solid #29333d;border-radius:8px}.row{display:grid;grid-template-columns:170px 112px 1fr;gap:10px;padding:9px 12px;border-bottom:1px solid #202a33;font-size:13px}.row:last-child{border-bottom:0}.time{color:#8b949e}.type{font-family:Consolas,monospace;color:#79c0ff}.type.OPEN{color:#56d364}.type.CLOSE{color:#ffb86b}.type.ORDER_ERROR,.type.DATA_ERROR,.type.KEY_VERIFY_FAILED{color:#ff7b72}.type.OPEN_REJECTED,.type.SIGNAL_REJECTED{color:#d29922}.details{color:#d6dee6;word-break:break-word}.muted{color:#8b949e;font-size:13px}@media(max-width:760px){body{padding:14px}.top{align-items:flex-start;flex-direction:column}.keygrid{grid-template-columns:1fr}.row{grid-template-columns:1fr}.time,.type{font-size:12px}}
 </style>
 </head>
 <body>
@@ -234,11 +307,24 @@ const adminHTML = `<!DOCTYPE html>
   <button class="save" type="submit">保存参数</button>
   <button class="init" type="button" id="initBtn">初始化为当前参数</button>
   <button class="reset" type="button" id="resetBtn">恢复初始化值</button>
+  <button class="start" type="button" id="startBtn">启动系统</button>
   <button class="restart" type="button" id="restartBtn">重启系统</button>
   <button class="stop" type="button" id="stopBtn">停止系统</button>
 </div>
 <div id="msg" class="msg"></div>
 </form>
+<section class="panel card keybox">
+  <div class="logbar"><h2>API 密钥</h2><span class="muted">验证 U 本位合约余额后可应用</span></div>
+  <div class="keygrid">
+    <div class="field"><label for="apiKey">API Key</label><input id="apiKey" autocomplete="off" spellcheck="false"></div>
+    <div class="field"><label for="apiSecret">API Secret</label><input id="apiSecret" type="password" autocomplete="off" spellcheck="false"></div>
+  </div>
+  <div class="actions">
+    <button class="restart" type="button" id="verifyKeyBtn">验证余额</button>
+    <button class="save" type="button" id="applyKeyBtn">验证并应用新密钥</button>
+  </div>
+  <div id="balanceBox" class="balance"></div>
+</section>
 <section class="panel grid">
   <div class="card">
     <div class="logbar"><h2>交易状态</h2><span class="muted" id="tradeHint">自动刷新</span></div>
@@ -295,8 +381,14 @@ for(const it of fields){document.getElementById(it[0]).addEventListener('input',
 document.getElementById('form').addEventListener('submit',async e=>{e.preventDefault();const p=collect();if(p.take_profit_pct/p.stop_loss_pct<1.5){msg('盈亏比必须 >= 1.5',false);return}const r=await fetch('/api/params',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok){const d=await r.json();populate(d.current);msg('参数已保存',true)}else msg('保存失败: '+await r.text(),false)});
 document.getElementById('resetBtn').onclick=async()=>{if(!confirm('恢复到初始化参数？'))return;const r=await fetch('/api/params/reset',{method:'POST'});if(r.ok){const d=await r.json();populate(d.current);msg('已恢复初始化值',true)}else msg('恢复失败',false)};
 document.getElementById('initBtn').onclick=async()=>{if(!confirm('把当前参数保存为新的初始化值？'))return;const r=await fetch('/api/params/initialize',{method:'POST'});if(r.ok){msg('当前参数已保存为初始化值',true)}else msg('初始化失败',false)};
+document.getElementById('startBtn').onclick=async()=>{if(!confirm('确认启动系统服务？'))return;const r=await fetch('/api/control/start',{method:'POST'});msg(r.ok?'已发送启动命令':'启动命令失败',r.ok)};
 document.getElementById('restartBtn').onclick=async()=>{if(!confirm('确认重启系统服务？'))return;const r=await fetch('/api/control/restart',{method:'POST'});msg(r.ok?'已发送重启命令':'重启命令失败',r.ok)};
 document.getElementById('stopBtn').onclick=async()=>{if(!confirm('确认停止系统服务？停止后需要用 SSH 或服务器面板启动。'))return;const r=await fetch('/api/control/stop',{method:'POST'});msg(r.ok?'已发送停止命令':'停止命令失败',r.ok)};
+function keyPayload(){return {api_key:document.getElementById('apiKey').value.trim(),api_secret:document.getElementById('apiSecret').value.trim()}}
+function renderBalances(list,applied){const box=document.getElementById('balanceBox');if(!list||!list.length){box.textContent='验证通过，但未返回余额。';return}box.textContent=(applied?'已应用新密钥\n':'验证通过\n')+list.map(b=>b.asset+': balance='+b.balance+' available='+b.available_balance).join('\n')}
+async function submitKeys(path,applied){const p=keyPayload();if(!p.api_key||!p.api_secret){msg('请填写 API Key 和 API Secret',false);return}const box=document.getElementById('balanceBox');box.textContent='正在验证余额...';const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok){const d=await r.json();renderBalances(d.balances||[],applied);msg(applied?'新密钥已验证并应用':'密钥验证通过',true)}else{const t=await r.text();box.textContent='验证失败: '+t;msg('密钥验证失败',false)}}
+document.getElementById('verifyKeyBtn').onclick=()=>submitKeys('/api/credentials/verify',false);
+document.getElementById('applyKeyBtn').onclick=()=>{if(!confirm('确认验证并应用这组新密钥到当前运行中的交易客户端？'))return;submitKeys('/api/credentials/apply',true)};
 function formatLog(e){const f=e.fields||{};return [e.message,f.engine&&('引擎 '+f.engine),f.dir&&('方向 '+f.dir),f.qty&&('数量 '+f.qty),f.entry&&('开仓 '+f.entry),f.exit&&('平仓 '+f.exit),f.pnl_pct!==undefined&&('PnL '+(Number(f.pnl_pct)*100).toFixed(4)+'%'),f.reason&&('原因 '+f.reason),f.state&&('状态 '+f.state),f.error&&('错误 '+f.error),f.est_slip_bps!==undefined&&('滑点 '+Number(f.est_slip_bps).toFixed(2)+' bps')].filter(Boolean).join(' | ')}
 function renderLogBox(id,entries,emptyText){const box=document.getElementById(id);box.innerHTML='';if(!entries.length){box.innerHTML='<div class="row"><div class="details">'+emptyText+'</div></div>';return}for(const e of entries.slice().reverse()){const row=document.createElement('div');row.className='row';row.innerHTML='<div class="time">'+new Date(e.time).toLocaleString()+'</div><div class="type '+e.type+'">'+e.type+'</div><div class="details">'+formatLog(e)+'</div>';box.appendChild(row)}}
 async function loadLogs(){const now='最后刷新 '+new Date().toLocaleTimeString();try{const r=await fetch('/api/logs');const d=await r.json();renderLogBox('tradeLogs',d.trades||[],'暂无开单/平仓记录');renderLogBox('systemLogs',d.system||[],'暂无系统报错');renderLogBox('rejectLogs',d.rejects||[],'暂无拒绝记录');document.getElementById('tradeHint').textContent=now;document.getElementById('systemHint').textContent=now;document.getElementById('rejectHint').textContent=now}catch(e){document.getElementById('tradeHint').textContent='日志加载失败';document.getElementById('systemHint').textContent='日志加载失败';document.getElementById('rejectHint').textContent='日志加载失败'}}

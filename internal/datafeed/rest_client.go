@@ -10,12 +10,14 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/shopspring/decimal"
 )
 
 type RESTClient struct {
+	mu        sync.RWMutex
 	baseURL   string
 	apiKey    string
 	apiSecret string
@@ -29,6 +31,19 @@ func NewRESTClient(baseURL, apiKey, apiSecret string) *RESTClient {
 		apiSecret: apiSecret,
 		http:      &http.Client{Timeout: 10 * time.Second},
 	}
+}
+
+func (c *RESTClient) BaseURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.baseURL
+}
+
+func (c *RESTClient) UpdateCredentials(apiKey, apiSecret string) {
+	c.mu.Lock()
+	c.apiKey = apiKey
+	c.apiSecret = apiSecret
+	c.mu.Unlock()
 }
 
 // OpenInterest GET /fapi/v1/openInterest
@@ -81,6 +96,42 @@ func (c *RESTClient) PositionRisk(ctx context.Context, symbol string) ([]Positio
 			EntryPrice:       ep,
 			UnRealizedProfit: pnl,
 			PositionSide:     r.PositionSide,
+		})
+	}
+	return out, nil
+}
+
+type FuturesBalance struct {
+	Asset              string          `json:"asset"`
+	Balance            decimal.Decimal `json:"balance"`
+	AvailableBalance   decimal.Decimal `json:"available_balance"`
+	CrossWalletBalance decimal.Decimal `json:"cross_wallet_balance"`
+}
+
+func (c *RESTClient) FuturesBalances(ctx context.Context) ([]FuturesBalance, error) {
+	resp, err := c.signedGet(ctx, "/fapi/v2/balance", nil)
+	if err != nil {
+		return nil, err
+	}
+	var raw []struct {
+		Asset              string `json:"asset"`
+		Balance            string `json:"balance"`
+		AvailableBalance   string `json:"availableBalance"`
+		CrossWalletBalance string `json:"crossWalletBalance"`
+	}
+	if err := json.Unmarshal(resp, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]FuturesBalance, 0, len(raw))
+	for _, r := range raw {
+		bal, _ := decimal.NewFromString(r.Balance)
+		available, _ := decimal.NewFromString(r.AvailableBalance)
+		cross, _ := decimal.NewFromString(r.CrossWalletBalance)
+		out = append(out, FuturesBalance{
+			Asset:              r.Asset,
+			Balance:            bal,
+			AvailableBalance:   available,
+			CrossWalletBalance: cross,
 		})
 	}
 	return out, nil
@@ -224,7 +275,7 @@ func (c *RESTClient) signedGet(ctx context.Context, path string, params map[stri
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-MBX-APIKEY", c.apiKey)
+	req.Header.Set("X-MBX-APIKEY", c.apiKeySnapshot())
 	return c.do(req)
 }
 
@@ -234,7 +285,7 @@ func (c *RESTClient) signedPost(ctx context.Context, path string, params map[str
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-MBX-APIKEY", c.apiKey)
+	req.Header.Set("X-MBX-APIKEY", c.apiKeySnapshot())
 	return c.do(req)
 }
 
@@ -244,8 +295,14 @@ func (c *RESTClient) signedDelete(ctx context.Context, path string, params map[s
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-MBX-APIKEY", c.apiKey)
+	req.Header.Set("X-MBX-APIKEY", c.apiKeySnapshot())
 	return c.do(req)
+}
+
+func (c *RESTClient) apiKeySnapshot() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.apiKey
 }
 
 func (c *RESTClient) signedQuery(params map[string]string) string {
@@ -255,7 +312,10 @@ func (c *RESTClient) signedQuery(params map[string]string) string {
 	}
 	q.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
 	raw := q.Encode()
-	mac := hmac.New(sha256.New, []byte(c.apiSecret))
+	c.mu.RLock()
+	secret := c.apiSecret
+	c.mu.RUnlock()
+	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(raw))
 	sig := fmt.Sprintf("%x", mac.Sum(nil))
 	return raw + "&signature=" + sig

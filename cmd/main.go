@@ -58,7 +58,7 @@ func main() {
 	eventLog := webui.NewEventLog(300)
 
 	// 管理后台（:8080）
-	admin := webui.NewServer(liveParams, eventLog, cfg.WebUI.ServiceName)
+	admin := webui.NewServer(liveParams, eventLog, rest, cfg.WebUI.ServiceName)
 	admin.Listen(cfg.WebUI.Addr)
 
 	pm := execution.NewPositionManager(cfg.Trading.Symbol)
