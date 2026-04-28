@@ -11,9 +11,9 @@ import (
 
 // Position 当前持仓状态（唯一真相来源）
 type Position struct {
-	Symbol    string
-	Direction datafeed.Direction
-	Quantity  decimal.Decimal // 0 = 无仓
+	Symbol     string
+	Direction  datafeed.Direction
+	Quantity   decimal.Decimal // 0 = 无仓
 	EntryPrice decimal.Decimal
 	EntryTime  int64 // ms
 
@@ -92,7 +92,7 @@ func (pm *PositionManager) UpdatePnL(markPrice decimal.Decimal) {
 	}
 	diff := markPrice.Sub(p.EntryPrice).Div(p.EntryPrice)
 	sign := decimal.NewFromInt(int64(p.DirectionSign()))
-	p.UnrealizedPnLPct = diff.Mul(sign).Mul(decimal.NewFromInt(100))
+	p.UnrealizedPnLPct = diff.Mul(sign)
 	p.UnrealizedPnL = diff.Mul(sign).Mul(p.EntryPrice).Mul(p.Quantity)
 }
 

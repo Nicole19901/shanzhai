@@ -20,8 +20,9 @@ func NewSqueezeEngine(cfg config.SqueezeEngineConfig) *SqueezeEngine {
 	return &SqueezeEngine{cfg: cfg}
 }
 
-func (e *SqueezeEngine) SetThresholds(confidence, basisZScore float64) {
+func (e *SqueezeEngine) SetConfig(enabled bool, confidence, basisZScore float64) {
 	e.mu.Lock()
+	e.cfg.Enabled = enabled
 	e.cfg.ConfidenceThreshold = confidence
 	e.cfg.BasisZScoreThreshold = basisZScore
 	e.mu.Unlock()

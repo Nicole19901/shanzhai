@@ -16,8 +16,8 @@ type Guardrails struct {
 	consecutiveLossLimit int
 
 	// 当日累计 PnL（相对初始资本的百分比）
-	dailyPnLPct    float64
-	dayResetAt     time.Time
+	dailyPnLPct float64
+	dayResetAt  time.Time
 
 	consecutiveLosses int
 	cooldownUntil     time.Time
@@ -31,7 +31,8 @@ func NewGuardrails(dailyLossLimitPct float64, consecutiveLossLimit int) *Guardra
 	}
 }
 
-// RecordTrade 记录一笔平仓结果，pnlPct 为相对资本的百分比（负为亏损）
+// RecordTrade records one closed trade result as a fractional return.
+// Example: -0.004 means -0.4%.
 func (g *Guardrails) RecordTrade(pnlPct float64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -77,14 +78,15 @@ func (g *Guardrails) CanTrade() bool {
 	return g.dailyPnLPct > -g.dailyLossLimitPct
 }
 
-// ComputePnLPct 计算单笔交易 PnL 百分比（基于 markPrice，不含杠杆，不含手续费）
+// ComputeUnrealizedPnLPct calculates fractional PnL from mark price.
+// Example: 0.008 means +0.8%.
 // direction: +1 LONG, -1 SHORT
 func ComputeUnrealizedPnLPct(markPrice, entryPrice decimal.Decimal, direction int) decimal.Decimal {
 	if entryPrice.IsZero() {
 		return decimal.Zero
 	}
 	diff := markPrice.Sub(entryPrice).Div(entryPrice)
-	return diff.Mul(decimal.NewFromInt(int64(direction))).Mul(decimal.NewFromInt(100))
+	return diff.Mul(decimal.NewFromInt(int64(direction)))
 }
 
 func midnight() time.Time {

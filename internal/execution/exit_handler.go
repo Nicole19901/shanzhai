@@ -64,11 +64,13 @@ func (h *TradeHandler) TryOpen(ctx context.Context, sig *engine.Signal) {
 	// Step 2: 必须无持仓
 	if !h.pm.IsFlat() {
 		log.Debug().Msg("open rejected: already in position")
+		h.addReject("OPEN_REJECTED", "already in position", nil)
 		return
 	}
 	// Step 3: 状态检查
 	if !h.sm.CanOpen() {
 		log.Debug().Str("state", h.sm.Current().String()).Msg("open rejected: state not allow")
+		h.addReject("OPEN_REJECTED", "state does not allow opening", map[string]interface{}{"state": h.sm.Current().String()})
 		return
 	}
 	// Step 4: BTC anchor 已在上游 Adjust 过，signal 到这里已通过
@@ -77,6 +79,7 @@ func (h *TradeHandler) TryOpen(ctx context.Context, sig *engine.Signal) {
 	now := time.Now().UnixMilli()
 	if now < h.cooldownUntil {
 		log.Debug().Int64("cooldown_ms", h.cooldownUntil-now).Msg("open rejected: cooldown")
+		h.addReject("OPEN_REJECTED", "cooldown active", map[string]interface{}{"cooldown_ms": h.cooldownUntil - now})
 		return
 	}
 	// Step 7: 计算入场参数
@@ -84,6 +87,7 @@ func (h *TradeHandler) TryOpen(ctx context.Context, sig *engine.Signal) {
 	qty, err := decimal.NewFromString(lp.LotSize)
 	if err != nil || qty.IsZero() || qty.IsNegative() {
 		log.Error().Str("lot_size", lp.LotSize).Msg("invalid live lot size, open rejected")
+		h.addReject("OPEN_REJECTED", "invalid live lot size", map[string]interface{}{"lot_size": lp.LotSize})
 		return
 	}
 	dir := sig.Direction
@@ -92,10 +96,12 @@ func (h *TradeHandler) TryOpen(ctx context.Context, sig *engine.Signal) {
 	fillPrice, _, err := h.om.OpenMarket(ctx, dir, qty)
 	if err != nil {
 		log.Error().Err(err).Msg("open market order failed")
+		h.addSystem("ORDER_ERROR", "open market order failed", map[string]interface{}{"error": err.Error()})
 		return
 	}
 	if fillPrice.IsZero() {
 		log.Error().Msg("fill price is zero, aborting open")
+		h.addSystem("ORDER_ERROR", "fill price is zero after open order", nil)
 		return
 	}
 
@@ -103,8 +109,12 @@ func (h *TradeHandler) TryOpen(ctx context.Context, sig *engine.Signal) {
 	h.pm.Open(dir, qty, fillPrice)
 	h.metrics.PositionChanged("open")
 
-	// Step 9b/c: 200ms 内挂出兜底订单
-	deadline := time.Now().Add(200 * time.Millisecond)
+	// Step 9b/c: hang guard orders within the configured risk deadline.
+	guardDeadline := lp.GuardDeadlineMs
+	if guardDeadline <= 0 {
+		guardDeadline = 150
+	}
+	deadline := time.Now().Add(time.Duration(guardDeadline) * time.Millisecond)
 	guardCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
@@ -118,15 +128,20 @@ func (h *TradeHandler) TryOpen(ctx context.Context, sig *engine.Signal) {
 		log.Error().
 			AnErr("sl_err", slErr).AnErr("tp_err", tpErr).
 			Msg("guard order failed, emergency close")
+		h.addSystem("ORDER_ERROR", "guard order failed, emergency close", map[string]interface{}{
+			"sl_error": errorString(slErr),
+			"tp_error": errorString(tpErr),
+		})
 		h.doClose(ctx, ExitReasonEmergency)
 		return
 	}
 
 	h.pm.SetGuardOrders(slID, tpID)
 
-	// 超时检查（200ms）
+	// Deadline check.
 	if time.Now().After(deadline) {
-		log.Error().Msg("guard orders exceeded 200ms deadline, emergency close")
+		log.Error().Int64("deadline_ms", guardDeadline).Msg("guard orders exceeded deadline, emergency close")
+		h.addSystem("ORDER_ERROR", "guard orders exceeded deadline", map[string]interface{}{"deadline_ms": guardDeadline})
 		h.doClose(ctx, ExitReasonEmergency)
 		return
 	}
@@ -255,6 +270,7 @@ func (h *TradeHandler) doClose(ctx context.Context, reason ExitReason) {
 	fillPrice, err := h.om.CloseMarket(ctx, pos.Direction, pos.Quantity)
 	if err != nil {
 		log.Error().Err(err).Msg("close market failed, entering FAILURE")
+		h.addSystem("ORDER_ERROR", "close market failed, entering FAILURE", map[string]interface{}{"error": err.Error()})
 		h.sm.RequestTransition(statemachine.StateFailure, "close market failed")
 		return
 	}
@@ -264,7 +280,7 @@ func (h *TradeHandler) doClose(ctx context.Context, reason ExitReason) {
 	if !pos.EntryPrice.IsZero() {
 		diff := fillPrice.Sub(pos.EntryPrice).Div(pos.EntryPrice)
 		sign := decimal.NewFromInt(int64(pos.DirectionSign()))
-		pnlD := diff.Mul(sign).Mul(decimal.NewFromInt(100))
+		pnlD := diff.Mul(sign)
 		pnlPct, _ = pnlD.Float64()
 	}
 
@@ -292,6 +308,25 @@ func (h *TradeHandler) doClose(ctx context.Context, reason ExitReason) {
 			"holding_ms": time.Now().UnixMilli() - prev.EntryTime,
 		})
 	}
+}
+
+func (h *TradeHandler) addReject(eventType, message string, fields map[string]interface{}) {
+	if h.events != nil {
+		h.events.AddReject(eventType, message, fields)
+	}
+}
+
+func (h *TradeHandler) addSystem(eventType, message string, fields map[string]interface{}) {
+	if h.events != nil {
+		h.events.AddSystem(eventType, message, fields)
+	}
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func dirStr(d datafeed.Direction) string {

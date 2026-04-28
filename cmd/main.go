@@ -87,7 +87,7 @@ func main() {
 	basisTracker := microstructure.NewBasisTracker()
 	oiTracker := microstructure.NewOITracker(rest, cfg.Trading.Symbol, cfg.Sampling.OIPollIntervalMs)
 
-	// 引擎（具体类型持有，支持运行时 SetThresholds）
+	// 引擎（具体类型持有，支持运行时热更新）
 	trendEng := engine.NewTrendEngine(cfg.Engines.Trend)
 	squeezeEng := engine.NewSqueezeEngine(cfg.Engines.Squeeze)
 	transEng := engine.NewTransitionEngine(cfg.Engines.Transition)
@@ -192,7 +192,7 @@ func main() {
 					return
 				}
 				atomic.AddInt64(&ethMsgCount, 1)
-				if !datafeed.ValidateLatency(t.EventTime, t.LocalTime, 300) {
+				if !datafeed.ValidateLatency(t.EventTime, t.LocalTime, latencyThresholdMs(sm)) {
 					metrics.DataError("eth_aggtrade", "stale")
 					continue
 				}
@@ -213,7 +213,8 @@ func main() {
 				if !ok {
 					return
 				}
-				if !datafeed.ValidateLatency(d.EventTime, d.LocalTime, 300) {
+				if !datafeed.ValidateLatency(d.EventTime, d.LocalTime, latencyThresholdMs(sm)) {
+					metrics.DataError("eth_depth", "stale")
 					continue
 				}
 				orderBook.Update(d)
@@ -233,7 +234,7 @@ func main() {
 					return
 				}
 				atomic.AddInt64(&ethMsgCount, 1)
-				if !datafeed.ValidateLatency(mp.EventTime, mp.LocalTime, 300) {
+				if !datafeed.ValidateLatency(mp.EventTime, mp.LocalTime, latencyThresholdMs(sm)) {
 					metrics.DataError("eth_markprice", "stale")
 					continue
 				}
@@ -384,6 +385,14 @@ func main() {
 
 				rcvd := tradeFlow.Snapshot()
 				oi := oiTracker.Snapshot()
+				if oi.ConsecutiveMiss >= 3 {
+					eventLog.AddSystem("DATA_ERROR", "OI fetch missed 3 consecutive samples", map[string]interface{}{
+						"source": "open_interest",
+						"count":  oi.ConsecutiveMiss,
+					})
+					sm.RequestTransition(statemachine.StateDegradation, "OI fetch missed 3 consecutive samples")
+					continue
+				}
 				basis := basisTracker.Snapshot()
 				spreadBaseline := microstructure.GetSpreadBaseline()
 
@@ -426,10 +435,10 @@ func main() {
 				basisZf, _ := basis.ZScore.Float64()
 				metrics.SetBasisZScore(basisZf)
 
-				// 热更新引擎阈值（从 LiveParams 读取）
-				trendEng.SetThresholds(lp.TrendConfidence, lp.OIDeltaThreshold)
-				squeezeEng.SetThresholds(lp.SqueezeConfidence, lp.BasisZScoreThreshold)
-				transEng.SetThresholds(lp.TransitionConfidence, lp.VolCompressionRatio)
+				// 热更新引擎开关和阈值（从 LiveParams 读取）
+				trendEng.SetConfig(lp.TrendEnabled, lp.TrendConfidence, lp.OIDeltaThreshold)
+				squeezeEng.SetConfig(lp.SqueezeEnabled, lp.SqueezeConfidence, lp.BasisZScoreThreshold)
+				transEng.SetConfig(lp.TransitionEnabled, lp.TransitionConfidence, lp.VolCompressionRatio)
 
 				for _, eng := range engines {
 					if (eng.Name() == engine.EngineTrend || eng.Name() == engine.EngineTransition) &&
@@ -447,8 +456,16 @@ func main() {
 
 					metrics.SignalGenerated(string(eng.Name()), dirLabel(sig.Direction))
 
+					rawEngine := sig.Engine
+					rawDir := sig.Direction
 					sig = btcAnchor.Adjust(sig, mctx.BTCTrend1m, mctx.BTCTrend5m)
 					if sig == nil {
+						eventLog.AddReject("SIGNAL_REJECTED", "BTC anchor rejected signal", map[string]interface{}{
+							"engine":     string(rawEngine),
+							"dir":        dirLabel(rawDir),
+							"btc_trend1": dirLabel(mctx.BTCTrend1m),
+							"btc_trend5": dirLabel(mctx.BTCTrend5m),
+						})
 						continue
 					}
 
@@ -457,6 +474,11 @@ func main() {
 					lotDecimal, err := decimal.NewFromString(lp.LotSize)
 					if err != nil || lotDecimal.IsZero() || lotDecimal.IsNegative() {
 						log.Error().Str("lot_size", lp.LotSize).Msg("invalid live lot size, signal rejected")
+						eventLog.AddReject("SIGNAL_REJECTED", "invalid live lot size", map[string]interface{}{
+							"engine":   string(sig.Engine),
+							"dir":      dirLabel(sig.Direction),
+							"lot_size": lp.LotSize,
+						})
 						continue
 					}
 					lot, _ := lotDecimal.Float64()
@@ -465,9 +487,21 @@ func main() {
 					estSlip := slippageEst.Estimate(spreadBps, lot, depth, vol1m*10000)
 					if estSlip > lp.MaxSlippageBps {
 						log.Debug().Float64("est_slip_bps", estSlip).Msg("slippage too high, signal rejected")
+						eventLog.AddReject("SIGNAL_REJECTED", "estimated slippage exceeds max", map[string]interface{}{
+							"engine":       string(sig.Engine),
+							"dir":          dirLabel(sig.Direction),
+							"est_slip_bps": estSlip,
+							"max_bps":      lp.MaxSlippageBps,
+						})
 						continue
 					}
 					if slippageEst.ShouldReject(lp.TakeProfitPct, sig.Confidence, estSlip, 0.04) {
+						eventLog.AddReject("SIGNAL_REJECTED", "expected pnl does not cover trading cost", map[string]interface{}{
+							"engine":       string(sig.Engine),
+							"dir":          dirLabel(sig.Direction),
+							"confidence":   sig.Confidence,
+							"est_slip_bps": estSlip,
+						})
 						continue
 					}
 
@@ -513,8 +547,21 @@ func bootCheck(ctx context.Context, rest *datafeed.RESTClient, cfg *config.Confi
 }
 
 func dirLabel(d datafeed.Direction) string {
-	if d == datafeed.DirectionLong {
+	switch d {
+	case datafeed.DirectionLong:
 		return "LONG"
+	case datafeed.DirectionShort:
+		return "SHORT"
+	default:
+		return "FLAT"
 	}
-	return "SHORT"
+}
+
+func latencyThresholdMs(sm *statemachine.StateMachine) int64 {
+	switch sm.Current() {
+	case statemachine.StateStress, statemachine.StateDegradation:
+		return 1000
+	default:
+		return 300
+	}
 }

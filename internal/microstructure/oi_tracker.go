@@ -26,11 +26,13 @@ type OITracker struct {
 	pollMs int64
 
 	// 派生指标
-	delta5s   decimal.Decimal
-	delta30s  decimal.Decimal
-	velocity  decimal.Decimal
-	accel     decimal.Decimal
-	baseline  decimal.Decimal // 30min 平均 OI 作为 baseline
+	delta5s  decimal.Decimal
+	delta30s decimal.Decimal
+	velocity decimal.Decimal
+	accel    decimal.Decimal
+	baseline decimal.Decimal // 30min 平均 OI 作为 baseline
+
+	consecutiveMiss int
 }
 
 func NewOITracker(rest *datafeed.RESTClient, symbol string, pollMs int64) *OITracker {
@@ -53,15 +55,18 @@ func (t *OITracker) Run(ctx context.Context) {
 			oi, err := t.rest.OpenInterest(ctx, t.symbol)
 			if err != nil {
 				consecutiveMiss++
+				t.mu.Lock()
+				t.consecutiveMiss = consecutiveMiss
+				t.mu.Unlock()
 				log.Error().Err(err).Int("consecutive", consecutiveMiss).Msg("OI fetch failed")
 				if consecutiveMiss >= 3 {
 					log.Error().Msg("OI: 连续3次缺失，触发 DEGRADATION")
-					// 上层通过 Snapshot 感知 consecutiveMiss >= 3
 				}
 				continue
 			}
 			consecutiveMiss = 0
 			t.mu.Lock()
+			t.consecutiveMiss = 0
 			t.addSample(oiSample{oi: oi, ts: time.Now().UnixMilli()})
 			t.recompute()
 			t.mu.Unlock()
@@ -140,21 +145,23 @@ func (t *OITracker) velocityAt(targetTs int64) decimal.Decimal {
 }
 
 type OISnapshot struct {
-	Delta5s  decimal.Decimal
-	Delta30s decimal.Decimal
-	Velocity decimal.Decimal
-	Accel    decimal.Decimal
-	Baseline decimal.Decimal
+	Delta5s         decimal.Decimal
+	Delta30s        decimal.Decimal
+	Velocity        decimal.Decimal
+	Accel           decimal.Decimal
+	Baseline        decimal.Decimal
+	ConsecutiveMiss int
 }
 
 func (t *OITracker) Snapshot() OISnapshot {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return OISnapshot{
-		Delta5s:  t.delta5s,
-		Delta30s: t.delta30s,
-		Velocity: t.velocity,
-		Accel:    t.accel,
-		Baseline: t.baseline,
+		Delta5s:         t.delta5s,
+		Delta30s:        t.delta30s,
+		Velocity:        t.velocity,
+		Accel:           t.accel,
+		Baseline:        t.baseline,
+		ConsecutiveMiss: t.consecutiveMiss,
 	}
 }

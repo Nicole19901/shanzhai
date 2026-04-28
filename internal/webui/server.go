@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"time"
 
@@ -50,15 +51,24 @@ func (s *Server) Listen(addr string) {
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
+		expectedUser := getenvDefault("WEBUI_USER", adminUser)
+		expectedPass := getenvDefault("WEBUI_PASSWORD", adminPass)
 		if !ok ||
-			subtle.ConstantTimeCompare([]byte(user), []byte(adminUser)) != 1 ||
-			subtle.ConstantTimeCompare([]byte(pass), []byte(adminPass)) != 1 {
+			subtle.ConstantTimeCompare([]byte(user), []byte(expectedUser)) != 1 ||
+			subtle.ConstantTimeCompare([]byte(pass), []byte(expectedPass)) != 1 {
 			w.Header().Set("WWW-Authenticate", `Basic realm="eth-perp-admin"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 		next(w, r)
 	}
+}
+
+func getenvDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func (s *Server) handleParams(w http.ResponseWriter, r *http.Request) {
@@ -117,6 +127,9 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]interface{}{
 		"entries": s.events.Recent(),
+		"trades":  s.events.RecentByCategory("trade"),
+		"system":  s.events.RecentByCategory("system"),
+		"rejects": s.events.RecentByCategory("reject"),
 	})
 }
 
@@ -163,8 +176,8 @@ func validateSnapshot(s LiveParamsSnapshot) error {
 	if s.LotSize == "" {
 		return fmt.Errorf("lot_size is required")
 	}
-	if s.Leverage < 1 || s.Leverage > 150 {
-		return fmt.Errorf("leverage must be in [1, 150]")
+	if s.Leverage < 1 || s.Leverage > 10 {
+		return fmt.Errorf("leverage must be in [1, 10]")
 	}
 	if s.MakerOffsetBps < 0 || s.MakerOffsetBps > 20 {
 		return fmt.Errorf("maker_offset_bps must be in [0, 20]")
@@ -210,7 +223,7 @@ const adminHTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ETH-Perp 控制台</title>
 <style>
-*{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#101418;color:#e8edf2;padding:24px}.top{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:18px}h1{font-size:22px;margin:0;color:#f2f6fa}.badge{font-size:12px;color:#79c0ff;border:1px solid #27547a;border-radius:999px;padding:4px 9px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}.card{background:#171d23;border:1px solid #29333d;border-radius:8px;padding:16px}.card h2{font-size:14px;margin:0 0 12px;color:#a9b7c4}.field{margin-bottom:12px}.field label{display:flex;justify-content:space-between;gap:12px;font-size:13px;color:#d6dee6;margin-bottom:6px}.field span{color:#79c0ff;font-family:Consolas,monospace;white-space:nowrap}input{width:100%;background:#0d1116;border:1px solid #34414d;border-radius:5px;color:#e8edf2;padding:7px 9px}input[type=range]{padding:0;accent-color:#2f81f7}.check{display:flex;align-items:center;gap:8px;font-size:13px;color:#d6dee6}.check input{width:auto}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}button{border:0;border-radius:6px;padding:9px 14px;color:#fff;font-weight:600;cursor:pointer}.save{background:#238636}.init{background:#8957e5}.reset{background:#3b434c}.restart{background:#0969da}.stop{background:#da3633}.msg{display:none;margin-top:12px;border-radius:6px;padding:9px 12px;font-size:13px}.ok{display:block;background:#102b1a;color:#56d364;border:1px solid #238636}.err{display:block;background:#341416;color:#ff7b72;border:1px solid #8e2b31}.panel{margin-top:18px}.logbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px}.loglist{height:260px;overflow:auto;background:#0d1116;border:1px solid #29333d;border-radius:8px}.row{display:grid;grid-template-columns:170px 88px 1fr;gap:10px;padding:9px 12px;border-bottom:1px solid #202a33;font-size:13px}.row:last-child{border-bottom:0}.time{color:#8b949e}.type{font-family:Consolas,monospace;color:#79c0ff}.type.OPEN{color:#56d364}.type.CLOSE{color:#ffb86b}.details{color:#d6dee6;word-break:break-word}.muted{color:#8b949e;font-size:13px}@media(max-width:760px){body{padding:14px}.top{align-items:flex-start;flex-direction:column}.row{grid-template-columns:1fr}.time,.type{font-size:12px}}
+*{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#101418;color:#e8edf2;padding:24px}.top{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:18px}h1{font-size:22px;margin:0;color:#f2f6fa}.badge{font-size:12px;color:#79c0ff;border:1px solid #27547a;border-radius:999px;padding:4px 9px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}.card{background:#171d23;border:1px solid #29333d;border-radius:8px;padding:16px}.card h2{font-size:14px;margin:0 0 12px;color:#a9b7c4}.field{margin-bottom:12px}.field label{display:flex;justify-content:space-between;gap:12px;font-size:13px;color:#d6dee6;margin-bottom:6px}.field span{color:#79c0ff;font-family:Consolas,monospace;white-space:nowrap}input{width:100%;background:#0d1116;border:1px solid #34414d;border-radius:5px;color:#e8edf2;padding:7px 9px}input[type=range]{padding:0;accent-color:#2f81f7}.check{display:flex;align-items:center;gap:8px;font-size:13px;color:#d6dee6}.check input{width:auto}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}button{border:0;border-radius:6px;padding:9px 14px;color:#fff;font-weight:600;cursor:pointer}.save{background:#238636}.init{background:#8957e5}.reset{background:#3b434c}.restart{background:#0969da}.stop{background:#da3633}.msg{display:none;margin-top:12px;border-radius:6px;padding:9px 12px;font-size:13px}.ok{display:block;background:#102b1a;color:#56d364;border:1px solid #238636}.err{display:block;background:#341416;color:#ff7b72;border:1px solid #8e2b31}.panel{margin-top:18px}.logbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px}.loglist{height:260px;overflow:auto;background:#0d1116;border:1px solid #29333d;border-radius:8px}.row{display:grid;grid-template-columns:170px 112px 1fr;gap:10px;padding:9px 12px;border-bottom:1px solid #202a33;font-size:13px}.row:last-child{border-bottom:0}.time{color:#8b949e}.type{font-family:Consolas,monospace;color:#79c0ff}.type.OPEN{color:#56d364}.type.CLOSE{color:#ffb86b}.type.ORDER_ERROR,.type.DATA_ERROR{color:#ff7b72}.type.OPEN_REJECTED,.type.SIGNAL_REJECTED{color:#d29922}.details{color:#d6dee6;word-break:break-word}.muted{color:#8b949e;font-size:13px}@media(max-width:760px){body{padding:14px}.top{align-items:flex-start;flex-direction:column}.row{grid-template-columns:1fr}.time,.type{font-size:12px}}
 </style>
 </head>
 <body>
@@ -226,9 +239,19 @@ const adminHTML = `<!DOCTYPE html>
 </div>
 <div id="msg" class="msg"></div>
 </form>
-<section class="panel card">
-  <div class="logbar"><h2>开单日志</h2><span class="muted" id="logHint">自动刷新</span></div>
-  <div class="loglist" id="logs"></div>
+<section class="panel grid">
+  <div class="card">
+    <div class="logbar"><h2>交易状态</h2><span class="muted" id="tradeHint">自动刷新</span></div>
+    <div class="loglist" id="tradeLogs"></div>
+  </div>
+  <div class="card">
+    <div class="logbar"><h2>系统日志</h2><span class="muted" id="systemHint">自动刷新</span></div>
+    <div class="loglist" id="systemLogs"></div>
+  </div>
+  <div class="card">
+    <div class="logbar"><h2>拒绝原因</h2><span class="muted" id="rejectHint">自动刷新</span></div>
+    <div class="loglist" id="rejectLogs"></div>
+  </div>
 </section>
 <script>
 const groups=[
@@ -240,7 +263,7 @@ const groups=[
 ['min_holding_time_sec','number','最短持仓秒',0,3600,5,v=>v+'s']]},
 {title:'交易执行',items:[
 ['lot_size','number','每笔手数',0.001,100,0.001,v=>String(v)],
-['leverage','number','杠杆倍数',1,150,1,v=>v+'x'],
+['leverage','number','杠杆倍数',1,10,1,v=>v+'x'],
 ['use_maker_mode','checkbox','Maker 模式',0,0,0,v=>v?'开':'关'],
 ['maker_offset_bps','range','Maker 偏移 bps',0,20,0.1,v=>v.toFixed(1)+' bps'],
 ['guard_deadline_ms','number','保护单截止 ms',100,180,1,v=>v+'ms']]},
@@ -274,8 +297,9 @@ document.getElementById('resetBtn').onclick=async()=>{if(!confirm('恢复到初�
 document.getElementById('initBtn').onclick=async()=>{if(!confirm('把当前参数保存为新的初始化值？'))return;const r=await fetch('/api/params/initialize',{method:'POST'});if(r.ok){msg('当前参数已保存为初始化值',true)}else msg('初始化失败',false)};
 document.getElementById('restartBtn').onclick=async()=>{if(!confirm('确认重启系统服务？'))return;const r=await fetch('/api/control/restart',{method:'POST'});msg(r.ok?'已发送重启命令':'重启命令失败',r.ok)};
 document.getElementById('stopBtn').onclick=async()=>{if(!confirm('确认停止系统服务？停止后需要用 SSH 或服务器面板启动。'))return;const r=await fetch('/api/control/stop',{method:'POST'});msg(r.ok?'已发送停止命令':'停止命令失败',r.ok)};
-function renderLogs(entries){const box=document.getElementById('logs');box.innerHTML='';if(!entries.length){box.innerHTML='<div class="row"><div class="details">暂无开单/平仓记录</div></div>';return}for(const e of entries.slice().reverse()){const f=e.fields||{};const detail=[e.message,f.dir&&('方向 '+f.dir),f.qty&&('数量 '+f.qty),f.entry&&('开仓 '+f.entry),f.exit&&('平仓 '+f.exit),f.pnl_pct!==undefined&&('PnL '+Number(f.pnl_pct).toFixed(4)+'%'),f.reason&&('原因 '+f.reason)].filter(Boolean).join(' | ');const row=document.createElement('div');row.className='row';row.innerHTML='<div class="time">'+new Date(e.time).toLocaleString()+'</div><div class="type '+e.type+'">'+e.type+'</div><div class="details">'+detail+'</div>';box.appendChild(row)}}
-async function loadLogs(){try{const r=await fetch('/api/logs');const d=await r.json();renderLogs(d.entries||[]);document.getElementById('logHint').textContent='最后刷新 '+new Date().toLocaleTimeString()}catch(e){document.getElementById('logHint').textContent='日志加载失败'}}
+function formatLog(e){const f=e.fields||{};return [e.message,f.engine&&('引擎 '+f.engine),f.dir&&('方向 '+f.dir),f.qty&&('数量 '+f.qty),f.entry&&('开仓 '+f.entry),f.exit&&('平仓 '+f.exit),f.pnl_pct!==undefined&&('PnL '+(Number(f.pnl_pct)*100).toFixed(4)+'%'),f.reason&&('原因 '+f.reason),f.state&&('状态 '+f.state),f.error&&('错误 '+f.error),f.est_slip_bps!==undefined&&('滑点 '+Number(f.est_slip_bps).toFixed(2)+' bps')].filter(Boolean).join(' | ')}
+function renderLogBox(id,entries,emptyText){const box=document.getElementById(id);box.innerHTML='';if(!entries.length){box.innerHTML='<div class="row"><div class="details">'+emptyText+'</div></div>';return}for(const e of entries.slice().reverse()){const row=document.createElement('div');row.className='row';row.innerHTML='<div class="time">'+new Date(e.time).toLocaleString()+'</div><div class="type '+e.type+'">'+e.type+'</div><div class="details">'+formatLog(e)+'</div>';box.appendChild(row)}}
+async function loadLogs(){const now='最后刷新 '+new Date().toLocaleTimeString();try{const r=await fetch('/api/logs');const d=await r.json();renderLogBox('tradeLogs',d.trades||[],'暂无开单/平仓记录');renderLogBox('systemLogs',d.system||[],'暂无系统报错');renderLogBox('rejectLogs',d.rejects||[],'暂无拒绝记录');document.getElementById('tradeHint').textContent=now;document.getElementById('systemHint').textContent=now;document.getElementById('rejectHint').textContent=now}catch(e){document.getElementById('tradeHint').textContent='日志加载失败';document.getElementById('systemHint').textContent='日志加载失败';document.getElementById('rejectHint').textContent='日志加载失败'}}
 (async()=>{try{const r=await fetch('/api/params');const d=await r.json();populate(d.current)}catch(e){msg('加载参数失败: '+e,false)}loadLogs();setInterval(loadLogs,3000)})();
 </script>
 </body>

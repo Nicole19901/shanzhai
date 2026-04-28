@@ -155,8 +155,8 @@ func validate(cfg *Config) error {
 	if tp/sl < 1.5 {
 		return fmt.Errorf("take_profit_pct/stop_loss_pct must be >= 1.5, got %.2f", tp/sl)
 	}
-	if cfg.Trading.Leverage < 1 || cfg.Trading.Leverage > 150 {
-		return fmt.Errorf("leverage must be in [1, 150], got %d", cfg.Trading.Leverage)
+	if cfg.Trading.Leverage < 1 || cfg.Trading.Leverage > 10 {
+		return fmt.Errorf("leverage must be in [1, 10], got %d", cfg.Trading.Leverage)
 	}
 	if cfg.Trading.MarginType != "ISOLATED" {
 		return fmt.Errorf("margin_type must be ISOLATED, got %s", cfg.Trading.MarginType)

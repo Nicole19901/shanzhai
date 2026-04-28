@@ -21,9 +21,10 @@ func NewTrendEngine(cfg config.TrendEngineConfig) *TrendEngine {
 	return &TrendEngine{cfg: cfg}
 }
 
-// SetThresholds 运行时热更新置信度和 OI delta 阈值
-func (e *TrendEngine) SetThresholds(confidence, oiDelta float64) {
+// SetConfig applies runtime WebUI updates.
+func (e *TrendEngine) SetConfig(enabled bool, confidence, oiDelta float64) {
 	e.mu.Lock()
+	e.cfg.Enabled = enabled
 	e.cfg.ConfidenceThreshold = confidence
 	e.cfg.OIDeltaThreshold = oiDelta
 	e.mu.Unlock()

@@ -21,8 +21,9 @@ func NewTransitionEngine(cfg config.TransitionEngineConfig) *TransitionEngine {
 	return &TransitionEngine{cfg: cfg}
 }
 
-func (e *TransitionEngine) SetThresholds(confidence, volCompressionRatio float64) {
+func (e *TransitionEngine) SetConfig(enabled bool, confidence, volCompressionRatio float64) {
 	e.mu.Lock()
+	e.cfg.Enabled = enabled
 	e.cfg.ConfidenceThreshold = confidence
 	e.cfg.VolCompressionRatio = volCompressionRatio
 	e.mu.Unlock()
