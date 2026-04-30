@@ -106,7 +106,6 @@ func (h *TradeHandler) TryOpen(ctx context.Context, sig *engine.Signal) {
 		h.addReject("OPEN_REJECTED", "missing Binance API credentials", nil)
 		return
 	}
-	// Step 4: BTC anchor 已在上游 Adjust 过，signal 到这里已通过
 	// Step 5: 滑点检查在上游完成
 	// Step 6: 冷却期检查
 	now := time.Now().UnixMilli()

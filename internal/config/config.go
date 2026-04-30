@@ -63,11 +63,9 @@ type TransitionEngineConfig struct {
 }
 
 type RiskConfig struct {
-	MaxSlippageBps              float64 `mapstructure:"max_slippage_bps"`
-	BTCCorrelationLockThreshold float64 `mapstructure:"btc_correlation_lock_threshold"`
-	BTCDependencyWeight         float64 `mapstructure:"btc_dependency_weight"`
-	DailyLossLimitPct           float64 `mapstructure:"daily_loss_limit_pct"`
-	ConsecutiveLossLimit        int     `mapstructure:"consecutive_loss_limit"`
+	MaxSlippageBps       float64 `mapstructure:"max_slippage_bps"`
+	DailyLossLimitPct    float64 `mapstructure:"daily_loss_limit_pct"`
+	ConsecutiveLossLimit int     `mapstructure:"consecutive_loss_limit"`
 }
 
 type WebUIConfig struct {

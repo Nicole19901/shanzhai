@@ -68,22 +68,22 @@ type Kline struct {
 
 // MarketContext 传递给引擎的只读市场快照
 type MarketContext struct {
-	ETHMarkPrice   decimal.Decimal
-	ETHIndexPrice  decimal.Decimal
-	FundingRate    decimal.Decimal
-	NextFundingMs  int64
+	ETHMarkPrice  decimal.Decimal
+	ETHIndexPrice decimal.Decimal
+	FundingRate   decimal.Decimal
+	NextFundingMs int64
 
 	// microstructure
 	RCVD5s  decimal.Decimal
 	RCVD30s decimal.Decimal
 	RCVD5m  decimal.Decimal
 
-	OIDelta5s   decimal.Decimal
-	OIDelta30s  decimal.Decimal
-	OIDelta5m   decimal.Decimal // 真实5分钟OI变化量
-	OIVelocity  decimal.Decimal
-	OIAccel     decimal.Decimal
-	OIBaseline  decimal.Decimal
+	OIDelta5s  decimal.Decimal
+	OIDelta30s decimal.Decimal
+	OIDelta5m  decimal.Decimal // 真实5分钟OI变化量
+	OIVelocity decimal.Decimal
+	OIAccel    decimal.Decimal
+	OIBaseline decimal.Decimal
 
 	BasisBps      decimal.Decimal
 	BasisVelocity decimal.Decimal
@@ -92,15 +92,10 @@ type MarketContext struct {
 	OrderbookSurvivalDecay decimal.Decimal // 0~1
 	SpreadWideningRate     decimal.Decimal
 
-	// BTC
-	BTCMarkPrice decimal.Decimal
-	BTCTrend1m   Direction
-	BTCTrend5m   Direction
-
 	// vol
-	RealizedVol1m  decimal.Decimal
-	RealizedVol5m  decimal.Decimal
-	VolBaseline1h  decimal.Decimal
+	RealizedVol1m decimal.Decimal
+	RealizedVol5m decimal.Decimal
+	VolBaseline1h decimal.Decimal
 
 	// kline price momentum
 	PriceMomentum1m decimal.Decimal

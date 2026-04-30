@@ -48,9 +48,8 @@ func (e *SqueezeEngine) Evaluate(ctx *datafeed.MarketContext) *Signal {
 		}
 	}
 
-	// BTC 剧烈波动时屏蔽
-	btcVol, _ := ctx.RealizedVol1m.Float64()
-	if btcVol > 0.003 {
+	realizedVol, _ := ctx.RealizedVol1m.Float64()
+	if realizedVol > 0.003 {
 		return nil
 	}
 

@@ -35,7 +35,6 @@ func main() {
 		}
 	}()
 
-	// ── 1. 加载配置 ──────────────────────────────────────────────
 	cfg, err := config.Load("config.yaml")
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to load config")
@@ -45,28 +44,23 @@ func main() {
 	activeSymbol.Store(strings.ToUpper(cfg.Trading.Symbol))
 	currentSymbol := func() string { return activeSymbol.Load().(string) }
 
-	// ── 2. REST 客户端 ────────────────────────────────────────────
 	rest := datafeed.NewRESTClient(cfg.Binance.RESTEndpoint, cfg.Binance.APIKey, cfg.Binance.APISecret)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// ── 3. Boot checklist ─────────────────────────────────────────
 	if rest.HasCredentials() {
 		bootCheck(ctx, rest, cfg)
 	} else {
 		log.Warn().Msg("boot check skipped: missing Binance API credentials; webui and market-data mode only")
 	}
 
-	// ── 4. 初始化组件 ────────────────────────────────────────────
 	metrics := telemetry.NewMetrics()
 	metrics.ServeHTTP(":9090")
 
-	// LiveParams：运行时可热更新的参数
 	liveParams := webui.NewLiveParams(cfg)
 	eventLog := webui.NewEventLog(300)
 
-	// 管理后台（:8080）
 	admin := webui.NewServer(liveParams, eventLog, rest, cfg.WebUI.ServiceName, cfg.Trading.Symbol)
 	admin.Listen(cfg.WebUI.Addr)
 
@@ -92,7 +86,6 @@ func main() {
 	)
 	recon.SetSymbolProvider(currentSymbol)
 
-	// 微观结构
 	tradeFlow := microstructure.NewTradeFlowTracker()
 	volTracker := microstructure.NewVolatilityTracker()
 	orderBook := microstructure.NewOrderBook()
@@ -100,20 +93,14 @@ func main() {
 	oiTracker := microstructure.NewOITracker(rest, cfg.Trading.Symbol, cfg.Sampling.OIPollIntervalMs)
 	oiTracker.SetSymbolProvider(currentSymbol)
 
-	// 引擎（具体类型持有，支持运行时热更新）
 	trendEng := engine.NewTrendEngine(cfg.Engines.Trend)
 	squeezeEng := engine.NewSqueezeEngine(cfg.Engines.Squeeze)
 	transEng := engine.NewTransitionEngine(cfg.Engines.Transition)
 	engines := []engine.Engine{trendEng, squeezeEng, transEng}
 
-	// ── 5. WebSocket 连接 ──────────────────────────────────────────
 	chs := datafeed.NewChannels()
 
 	ethHandlers := symbolHandlers(currentSymbol(), chs)
-	btcHandlers := map[string]datafeed.StreamHandler{
-		"btcusdt@aggTrade":     datafeed.MakeAggTradeHandler(chs.BTCAggTrade),
-		"btcusdt@markPrice@1s": datafeed.MakeMarkPriceHandler(chs.BTCMarkPrice),
-	}
 
 	ethWS, err := datafeed.NewWSClient(cfg.Binance.WSEndpoint,
 		symbolStreams(currentSymbol()),
@@ -121,15 +108,7 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("eth ws init failed")
 	}
-	btcWS, err := datafeed.NewWSClient(cfg.Binance.WSEndpoint,
-		[]string{"btcusdt@aggTrade", "btcusdt@markPrice@1s"},
-		btcHandlers)
-	if err != nil {
-		log.Fatal().Err(err).Msg("btc ws init failed")
-	}
-
-	// ── 6. 数据流预热计数（atomic 防数据竞争）────────────────────
-	var ethMsgCount, btcMsgCount int64
+	var symbolMsgCount int64
 	warmupDone := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
@@ -140,49 +119,39 @@ func main() {
 				log.Debug().Msg("data stream warmup waiting for verified API credentials")
 				continue
 			}
-			eth := atomic.LoadInt64(&ethMsgCount)
-			btc := atomic.LoadInt64(&btcMsgCount)
-			if eth < 100 || btc < 100 {
-				log.Error().Int64("eth_msgs", eth).Int64("btc_msgs", btc).
-					Msg("data stream warmup waiting: insufficient messages")
-				eventLog.AddSystem("DATA_WARMUP_WAIT", "data stream warmup waiting: insufficient messages", map[string]interface{}{
-					"eth_msgs": eth,
-					"btc_msgs": btc,
+			symbolMsgs := atomic.LoadInt64(&symbolMsgCount)
+			if symbolMsgs < 100 {
+				log.Error().Str("symbol", currentSymbol()).Int64("symbol_msgs", symbolMsgs).
+					Msg("data stream warmup waiting: insufficient symbol messages")
+				eventLog.AddSystem("DATA_WARMUP_WAIT", "data stream warmup waiting: insufficient symbol messages", map[string]interface{}{
+					"symbol":      currentSymbol(),
+					"symbol_msgs": symbolMsgs,
 				})
 				continue
 			}
-			log.Info().Int64("eth_msgs", eth).Int64("btc_msgs", btc).Msg("data streams stable")
-			eventLog.AddSystem("DATA_READY", "data streams stable", map[string]interface{}{
-				"eth_msgs": eth,
-				"btc_msgs": btc,
+			log.Info().Str("symbol", currentSymbol()).Int64("symbol_msgs", symbolMsgs).Msg("data stream stable")
+			eventLog.AddSystem("DATA_READY", "data stream stable", map[string]interface{}{
+				"symbol":      currentSymbol(),
+				"symbol_msgs": symbolMsgs,
 			})
 			close(warmupDone)
 			return
 		}
 	}()
 
-	// 共享的最新市场状态（原子写入，引擎评估时读取）
 	var (
-		latestETHMark    atomic.Value // decimal.Decimal
-		latestETHIndex   atomic.Value
-		latestFunding    atomic.Value
-		latestNextFund   atomic.Int64
-		latestBTCMark    atomic.Value
-		latestBTCTrend1m atomic.Int32 // datafeed.Direction
-		latestBTCTrend5m atomic.Int32
-		latestPriceMom   atomic.Value // decimal.Decimal
+		latestETHMark  atomic.Value // decimal.Decimal
+		latestETHIndex atomic.Value
+		latestFunding  atomic.Value
+		latestNextFund atomic.Int64
+		latestPriceMom atomic.Value // decimal.Decimal
 
-		prevBTCClose1m atomic.Value
-		prevBTCClose5m atomic.Value
-		prevETHClose   atomic.Value
+		prevETHClose atomic.Value
 	)
 	latestETHMark.Store(decimal.Zero)
 	latestETHIndex.Store(decimal.Zero)
 	latestFunding.Store(decimal.Zero)
-	latestBTCMark.Store(decimal.Zero)
 	latestPriceMom.Store(decimal.Zero)
-	prevBTCClose1m.Store(decimal.Zero)
-	prevBTCClose5m.Store(decimal.Zero)
 	prevETHClose.Store(decimal.Zero)
 
 	tradeHandler.SetMarkPriceProvider(func() decimal.Decimal {
@@ -215,11 +184,10 @@ func main() {
 		latestFunding.Store(decimal.Zero)
 		latestPriceMom.Store(decimal.Zero)
 		prevETHClose.Store(decimal.Zero)
-		atomic.StoreInt64(&ethMsgCount, 0)
+		atomic.StoreInt64(&symbolMsgCount, 0)
 		return ethWS.SetStreams(symbolStreams(sym), symbolHandlers(sym, chs))
 	})
 
-	// ── 7. 启动 goroutines ────────────────────────────────────────
 	var wg sync.WaitGroup
 	start := func(name string, fn func()) {
 		wg.Add(1)
@@ -235,12 +203,10 @@ func main() {
 	}
 
 	start("eth_ws", func() { ethWS.Run(ctx) })
-	start("btc_ws", func() { btcWS.Run(ctx) })
 	start("state_machine", func() { sm.Run(ctx) })
 	start("oi_tracker", func() { oiTracker.Run(ctx) })
 	start("reconciliation", func() { recon.Run(ctx) })
 
-	// ETH aggTrade
 	start("eth_aggtrade_handler", func() {
 		for {
 			select {
@@ -250,7 +216,7 @@ func main() {
 				if !ok {
 					return
 				}
-				atomic.AddInt64(&ethMsgCount, 1)
+				atomic.AddInt64(&symbolMsgCount, 1)
 				if !datafeed.ValidateLatency(t.EventTime, t.LocalTime, latencyThresholdMs(sm)) {
 					metrics.DataError("eth_aggtrade", "stale")
 					continue
@@ -260,7 +226,6 @@ func main() {
 		}
 	})
 
-	// ETH depth
 	start("eth_depth_handler", func() {
 		for {
 			select {
@@ -280,7 +245,6 @@ func main() {
 		}
 	})
 
-	// ETH markPrice → PnL 本地监控（双保险）
 	start("eth_markprice_handler", func() {
 		for {
 			select {
@@ -290,7 +254,7 @@ func main() {
 				if !ok {
 					return
 				}
-				atomic.AddInt64(&ethMsgCount, 1)
+				atomic.AddInt64(&symbolMsgCount, 1)
 				if !datafeed.ValidateLatency(mp.EventTime, mp.LocalTime, latencyThresholdMs(sm)) {
 					metrics.DataError("eth_markprice", "stale")
 					continue
@@ -301,13 +265,11 @@ func main() {
 				latestFunding.Store(mp.FundingRate)
 				latestNextFund.Store(mp.NextFundingTime)
 
-				// 本地价格监控（止盈止损双保险，最高优先级）
 				tradeHandler.CheckAndExit(ctx, mp.MarkPrice)
 			}
 		}
 	})
 
-	// ETH kline 1m → volatility + price momentum
 	start("eth_kline_handler", func() {
 		for {
 			select {
@@ -331,85 +293,12 @@ func main() {
 		}
 	})
 
-	// BTC markPrice → trend direction
-	start("btc_markprice_handler", func() {
-		var btcKline1mClose, btcKline5mClose [5]decimal.Decimal
-		var count1m, count5m int64
-		ticker1m := time.NewTicker(time.Minute)
-		ticker5m := time.NewTicker(5 * time.Minute)
-		defer ticker1m.Stop()
-		defer ticker5m.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case mp, ok := <-chs.BTCMarkPrice:
-				if !ok {
-					return
-				}
-				atomic.AddInt64(&btcMsgCount, 1)
-				latestBTCMark.Store(mp.MarkPrice)
-			case <-ticker1m.C:
-				cur := latestBTCMark.Load().(decimal.Decimal)
-				prev := prevBTCClose1m.Load().(decimal.Decimal)
-				if !prev.IsZero() && !cur.IsZero() {
-					btcKline1mClose[int(count1m)%5] = cur
-					count1m++
-					// 趋势：cur vs 5 个样本中最旧的
-					oldest := btcKline1mClose[int(count1m)%5]
-					if !oldest.IsZero() {
-						if cur.GreaterThan(oldest) {
-							latestBTCTrend1m.Store(int32(datafeed.DirectionLong))
-						} else {
-							latestBTCTrend1m.Store(int32(datafeed.DirectionShort))
-						}
-					}
-				}
-				prevBTCClose1m.Store(cur)
-			case <-ticker5m.C:
-				cur := latestBTCMark.Load().(decimal.Decimal)
-				prev := prevBTCClose5m.Load().(decimal.Decimal)
-				if !prev.IsZero() && !cur.IsZero() {
-					btcKline5mClose[int(count5m)%5] = cur
-					count5m++
-					oldest := btcKline5mClose[int(count5m)%5]
-					if !oldest.IsZero() {
-						if cur.GreaterThan(oldest) {
-							latestBTCTrend5m.Store(int32(datafeed.DirectionLong))
-						} else {
-							latestBTCTrend5m.Store(int32(datafeed.DirectionShort))
-						}
-					}
-				}
-				prevBTCClose5m.Store(cur)
-			}
-		}
-	})
-
-	// BTC aggTrade 计数（不做额外处理）
-	start("btc_aggtrade_handler", func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case _, ok := <-chs.BTCAggTrade:
-				if !ok {
-					return
-				}
-				atomic.AddInt64(&btcMsgCount, 1)
-			}
-		}
-	})
-
-	// 引擎评估（每 FastIntervalMs 一次，预热+观察期后启动）
 	start("engine_evaluator", func() {
 		select {
 		case <-warmupDone:
 		case <-ctx.Done():
 			return
 		}
-		// 5 分钟初始观察期
 		select {
 		case <-time.After(5 * time.Minute):
 		case <-ctx.Done():
@@ -475,10 +364,6 @@ func main() {
 					OrderbookSurvivalDecay: orderBook.SurvivalDecayRate(),
 					SpreadWideningRate:     orderBook.SpreadWideningRate(spreadBaseline),
 
-					BTCMarkPrice: latestBTCMark.Load().(decimal.Decimal),
-					BTCTrend1m:   datafeed.Direction(latestBTCTrend1m.Load()),
-					BTCTrend5m:   datafeed.Direction(latestBTCTrend5m.Load()),
-
 					RealizedVol1m: volTracker.StdDev(60_000),
 					RealizedVol5m: volTracker.StdDev(300_000),
 					VolBaseline1h: volTracker.StdDev(3_600_000),
@@ -491,7 +376,6 @@ func main() {
 				basisZf, _ := basis.ZScore.Float64()
 				metrics.SetBasisZScore(basisZf)
 
-				// 热更新引擎开关和阈值（从 LiveParams 读取）
 				trendEng.SetConfig(lp.TrendEnabled, lp.TrendConfidence, lp.OIDeltaThreshold)
 				squeezeEng.SetConfig(lp.SqueezeEnabled, lp.SqueezeConfidence, lp.BasisZScoreThreshold)
 				transEng.SetConfig(lp.TransitionEnabled, lp.TransitionConfidence, lp.VolCompressionRatio)
@@ -514,7 +398,6 @@ func main() {
 
 					metrics.SignalGenerated(string(eng.Name()), dirLabel(sig.Direction))
 
-					// 滑点检查（用 liveParams 的 max_slippage_bps）
 					spreadBps, _ := orderBook.SpreadBps().Float64()
 					lotDecimal, err := decimal.NewFromString(lp.MarginUSDT)
 					if err == nil && lotDecimal.IsPositive() {
@@ -561,7 +444,6 @@ func main() {
 		}
 	})
 
-	// ── 8. OS 信号退出 ────────────────────────────────────────────
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-sigCh

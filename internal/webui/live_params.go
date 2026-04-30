@@ -41,10 +41,9 @@ type LiveParams struct {
 	VolCompressionRatio  float64
 
 	// ── 风控 ────────────────────────────────────────────
-	MaxSlippageBps              float64
-	DailyLossLimitPct           float64
-	ConsecutiveLossLimit        int
-	BTCCorrelationLockThreshold float64
+	MaxSlippageBps       float64
+	DailyLossLimitPct    float64
+	ConsecutiveLossLimit int
 
 	// ── 微观结构 ─────────────────────────────────────────
 	DepthLevels int // 吃单深度档位 1-20，默认 5
@@ -83,12 +82,11 @@ type LiveParamsSnapshot struct {
 	TransitionConfidence float64 `json:"transition_confidence"`
 	VolCompressionRatio  float64 `json:"vol_compression_ratio"`
 
-	MaxSlippageBps              float64 `json:"max_slippage_bps"`
-	DailyLossLimitPct           float64 `json:"daily_loss_limit_pct"`
-	ConsecutiveLossLimit        int     `json:"consecutive_loss_limit"`
-	BTCCorrelationLockThreshold float64 `json:"btc_correlation_lock_threshold"`
-	DepthLevels                 int     `json:"depth_levels"`
-	SignalBasedExit             bool    `json:"signal_based_exit"`
+	MaxSlippageBps       float64 `json:"max_slippage_bps"`
+	DailyLossLimitPct    float64 `json:"daily_loss_limit_pct"`
+	ConsecutiveLossLimit int     `json:"consecutive_loss_limit"`
+	DepthLevels          int     `json:"depth_levels"`
+	SignalBasedExit      bool    `json:"signal_based_exit"`
 }
 
 func NewLiveParams(cfg *config.Config) *LiveParams {
@@ -118,11 +116,10 @@ func NewLiveParams(cfg *config.Config) *LiveParams {
 		TransitionConfidence: cfg.Engines.Transition.ConfidenceThreshold,
 		VolCompressionRatio:  cfg.Engines.Transition.VolCompressionRatio,
 
-		MaxSlippageBps:              cfg.Risk.MaxSlippageBps,
-		DailyLossLimitPct:           cfg.Risk.DailyLossLimitPct,
-		ConsecutiveLossLimit:        cfg.Risk.ConsecutiveLossLimit,
-		BTCCorrelationLockThreshold: cfg.Risk.BTCCorrelationLockThreshold,
-		DepthLevels:                 5,
+		MaxSlippageBps:       cfg.Risk.MaxSlippageBps,
+		DailyLossLimitPct:    cfg.Risk.DailyLossLimitPct,
+		ConsecutiveLossLimit: cfg.Risk.ConsecutiveLossLimit,
+		DepthLevels:          5,
 	}
 	lp := &LiveParams{defaults: snap}
 	lp.apply(snap)
@@ -158,12 +155,11 @@ func (lp *LiveParams) Get() LiveParamsSnapshot {
 		TransitionConfidence: lp.TransitionConfidence,
 		VolCompressionRatio:  lp.VolCompressionRatio,
 
-		MaxSlippageBps:              lp.MaxSlippageBps,
-		DailyLossLimitPct:           lp.DailyLossLimitPct,
-		ConsecutiveLossLimit:        lp.ConsecutiveLossLimit,
-		BTCCorrelationLockThreshold: lp.BTCCorrelationLockThreshold,
-		DepthLevels:                 lp.DepthLevels,
-		SignalBasedExit:             lp.SignalBasedExit,
+		MaxSlippageBps:       lp.MaxSlippageBps,
+		DailyLossLimitPct:    lp.DailyLossLimitPct,
+		ConsecutiveLossLimit: lp.ConsecutiveLossLimit,
+		DepthLevels:          lp.DepthLevels,
+		SignalBasedExit:      lp.SignalBasedExit,
 	}
 }
 
@@ -219,12 +215,11 @@ func (lp *LiveParams) snapshotLocked() LiveParamsSnapshot {
 		TransitionConfidence: lp.TransitionConfidence,
 		VolCompressionRatio:  lp.VolCompressionRatio,
 
-		MaxSlippageBps:              lp.MaxSlippageBps,
-		DailyLossLimitPct:           lp.DailyLossLimitPct,
-		ConsecutiveLossLimit:        lp.ConsecutiveLossLimit,
-		BTCCorrelationLockThreshold: lp.BTCCorrelationLockThreshold,
-		DepthLevels:                 lp.DepthLevels,
-		SignalBasedExit:             lp.SignalBasedExit,
+		MaxSlippageBps:       lp.MaxSlippageBps,
+		DailyLossLimitPct:    lp.DailyLossLimitPct,
+		ConsecutiveLossLimit: lp.ConsecutiveLossLimit,
+		DepthLevels:          lp.DepthLevels,
+		SignalBasedExit:      lp.SignalBasedExit,
 	}
 }
 
@@ -271,7 +266,6 @@ func (lp *LiveParams) apply(s LiveParamsSnapshot) {
 	lp.MaxSlippageBps = s.MaxSlippageBps
 	lp.DailyLossLimitPct = s.DailyLossLimitPct
 	lp.ConsecutiveLossLimit = s.ConsecutiveLossLimit
-	lp.BTCCorrelationLockThreshold = s.BTCCorrelationLockThreshold
 	if s.DepthLevels < 1 {
 		s.DepthLevels = 5
 	}

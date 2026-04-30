@@ -27,8 +27,6 @@ engines:
 
 risk:
   max_slippage_bps: 8
-  btc_correlation_lock_threshold: 0.90
-  btc_dependency_weight: 0.85
   daily_loss_limit_pct: 0.05
   consecutive_loss_limit: 5
 

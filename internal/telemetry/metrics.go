@@ -14,11 +14,10 @@ type Metrics struct {
 	stateTransitions *prometheus.CounterVec
 	dataErrors       *prometheus.CounterVec
 
-	positionQty     prometheus.Gauge
+	positionQty      prometheus.Gauge
 	unrealizedPnLPct prometheus.Gauge
-	btcCorr1m       prometheus.Gauge
-	basisZScore     prometheus.Gauge
-	currentState    prometheus.Gauge
+	basisZScore      prometheus.Gauge
+	currentState     prometheus.Gauge
 
 	signalToOrderLatency prometheus.Histogram
 	orderFillLatency     prometheus.Histogram
@@ -49,9 +48,6 @@ func NewMetrics() *Metrics {
 		unrealizedPnLPct: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "eth_unrealized_pnl_pct",
 		}),
-		btcCorr1m: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "eth_btc_correlation_1m",
-		}),
 		basisZScore: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "eth_basis_zscore",
 		}),
@@ -76,7 +72,7 @@ func NewMetrics() *Metrics {
 	prometheus.MustRegister(
 		m.signalsTotal, m.ordersTotal, m.positionChanges,
 		m.stateTransitions, m.dataErrors,
-		m.positionQty, m.unrealizedPnLPct, m.btcCorr1m, m.basisZScore, m.currentState,
+		m.positionQty, m.unrealizedPnLPct, m.basisZScore, m.currentState,
 		m.signalToOrderLatency, m.orderFillLatency, m.slippageBps,
 	)
 	return m
@@ -102,14 +98,13 @@ func (m *Metrics) DataError(source, errType string) {
 	m.dataErrors.WithLabelValues(source, errType).Inc()
 }
 
-func (m *Metrics) SetPositionQty(qty float64)       { m.positionQty.Set(qty) }
-func (m *Metrics) SetPnLPct(pct float64)            { m.unrealizedPnLPct.Set(pct) }
-func (m *Metrics) SetBTCCorr(corr float64)          { m.btcCorr1m.Set(corr) }
-func (m *Metrics) SetBasisZScore(z float64)         { m.basisZScore.Set(z) }
-func (m *Metrics) SetState(state float64)           { m.currentState.Set(state) }
-func (m *Metrics) ObserveSignalLatency(ms float64)  { m.signalToOrderLatency.Observe(ms) }
-func (m *Metrics) ObserveFillLatency(ms float64)    { m.orderFillLatency.Observe(ms) }
-func (m *Metrics) ObserveSlippage(bps float64)      { m.slippageBps.Observe(bps) }
+func (m *Metrics) SetPositionQty(qty float64)      { m.positionQty.Set(qty) }
+func (m *Metrics) SetPnLPct(pct float64)           { m.unrealizedPnLPct.Set(pct) }
+func (m *Metrics) SetBasisZScore(z float64)        { m.basisZScore.Set(z) }
+func (m *Metrics) SetState(state float64)          { m.currentState.Set(state) }
+func (m *Metrics) ObserveSignalLatency(ms float64) { m.signalToOrderLatency.Observe(ms) }
+func (m *Metrics) ObserveFillLatency(ms float64)   { m.orderFillLatency.Observe(ms) }
+func (m *Metrics) ObserveSlippage(bps float64)     { m.slippageBps.Observe(bps) }
 
 func (m *Metrics) ServeHTTP(addr string) {
 	http.Handle("/metrics", promhttp.Handler())
