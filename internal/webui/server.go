@@ -646,7 +646,7 @@ const adminHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>闂傚倷鐒﹁ぐ鍐崲閹邦喒鍋撻棃娑樼骇缂佸倸绉规俊鍫曞幢濮楀棙寤洪梻浣侯攰閻洭宕橀妸褍骞€闂?/title>
+<title>量化交易控制台</title>
 <style>
 *{box-sizing:border-box}
 body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#101418;color:#e8edf2;padding:20px}
@@ -720,7 +720,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
 <div class="grid" id="grid"></div>
 <div class="actions">
   <button class="btn-save" type="submit">淇濆瓨鍙傛暟</button>
-  <button class="btn-restart" type="button" id="testParamsBtn">娴嬭瘯寮€鍗曞弬鏁?/button>
+  <button class="btn-restart" type="button" id="testParamsBtn">测试开单参数</button>
   <button class="btn-init" type="button" id="initBtn">鍒濆鍖栦负褰撳墠鍙傛暟</button>
   <button class="btn-reset" type="button" id="resetBtn">鎭㈠鍒濆鍖栧€?/button>
   <button class="btn-start" type="button" id="startBtn">鍚姩绯荤粺</button>
@@ -783,7 +783,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
     <div id="modalContent"></div>
     <div class="modal-actions">
       <button class="btn-apply" id="modalApplyBtn">搴旂敤姝ゅ瘑閽?/button>
-      <button class="btn-neutral" id="modalCancelBtn">闂備胶顭堢换鎴炵箾婵犲伣?/button>
+      <button class="btn-neutral" id="modalCancelBtn">取消</button>
     </div>
   </div>
 </div>
@@ -903,8 +903,8 @@ document.getElementById('testParamsBtn').onclick=async()=>{
     transition_enabled:true,transition_confidence:0.30,vol_compression_ratio:0.90,max_slippage_bps:20});
   populate(p);
   const r=await fetch('/api/params',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});
-  if(r.ok){const d=await r.json();populate(d.current);msg('娴嬭瘯鍙傛暟宸蹭繚瀛?,true);}
-  else msg('娴嬭瘯鍙傛暟澶辫触: '+await r.text(),false);
+  if(r.ok){const d=await r.json();populate(d.current);msg('测试参数已保存',true);}
+  else msg('测试参数失败: '+await r.text(),false);
 };
 document.getElementById('resetBtn').onclick=async()=>{
   if(!confirm('鎭㈠鍒板垵濮嬪寲鍙傛暟锛?))return;
