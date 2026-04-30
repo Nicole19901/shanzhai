@@ -615,7 +615,6 @@ func symbolStreams(symbol string) []string {
 	return []string{
 		base + "@aggTrade",
 		base + "@depth@100ms",
-		base + "@kline_1s",
 		base + "@kline_1m",
 		base + "@markPrice@1s",
 	}
@@ -626,7 +625,6 @@ func symbolHandlers(symbol string, chs *datafeed.Channels) map[string]datafeed.S
 	return map[string]datafeed.StreamHandler{
 		base + "@aggTrade":     datafeed.MakeAggTradeHandler(chs.ETHAggTrade),
 		base + "@depth@100ms":  datafeed.MakeDepthHandler(chs.ETHDepth),
-		base + "@kline_1s":     datafeed.MakeKlineHandler(chs.ETHKline1s),
 		base + "@kline_1m":     datafeed.MakeKlineHandler(chs.ETHKline1m),
 		base + "@markPrice@1s": datafeed.MakeMarkPriceHandler(chs.ETHMarkPrice),
 	}
