@@ -150,8 +150,10 @@ func (s *Server) Listen(addr string) {
 	mux.HandleFunc("/api/control/start", s.auth(s.handleStart))
 	mux.HandleFunc("/api/control/stop", s.auth(s.handleStop))
 	mux.HandleFunc("/api/control/restart", s.auth(s.handleRestart))
+	mux.HandleFunc("/api/keys", s.auth(s.handleKeys))
 	mux.HandleFunc("/api/keys/activate", s.auth(s.handleKeyActivate))
 	mux.HandleFunc("/api/keys/delete", s.auth(s.handleKeyDelete))
+	mux.HandleFunc("/api/symbol", s.auth(s.handleSymbol))
 	mux.HandleFunc("/api/symbol/validate", s.auth(s.handleSymbolValidate))
 	mux.HandleFunc("/api/trade/open", s.auth(s.handleTradeOpen))
 	mux.HandleFunc("/api/trade/close", s.auth(s.handleTradeClose))
@@ -563,6 +565,10 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleControl(w http.ResponseWriter, r *http.Request, action string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if (action == "start" || action == "restart") && !s.rest.HasCredentials() {
+		http.Error(w, "请先填写 API Key 和 Secret，验证通过并应用后再启动", http.StatusBadRequest)
 		return
 	}
 	log.Warn().Str("action", action).Str("service", s.serviceName).Msg("webui: service control requested")

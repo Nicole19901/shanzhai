@@ -195,10 +195,10 @@ func main() {
 		oldSymbol := currentSymbol()
 		if rest.HasCredentials() {
 			if err := rest.CancelAllOrders(ctx, oldSymbol); err != nil {
-				return fmt.Errorf("cancel current symbol orders before switch: %w", err)
+				log.Warn().Err(err).Str("symbol", oldSymbol).Msg("cancel current symbol orders during symbol switch failed")
 			}
 			if err := rest.SetLeverage(ctx, sym, liveParams.Get().Leverage); err != nil {
-				return fmt.Errorf("set leverage for %s: %w", sym, err)
+				log.Warn().Err(err).Str("symbol", sym).Int("leverage", liveParams.Get().Leverage).Msg("set leverage during symbol switch failed")
 			}
 			if err := rest.SetMarginType(ctx, sym, cfg.Trading.MarginType); err != nil {
 				log.Warn().Err(err).Str("symbol", sym).Msg("set margin type during symbol switch failed")
@@ -423,6 +423,9 @@ func main() {
 				lp := liveParams.Get()
 
 				if !guard.CanTrade() {
+					continue
+				}
+				if !omgr.HasCredentials() {
 					continue
 				}
 
