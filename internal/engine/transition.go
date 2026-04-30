@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
-	"github.com/shopspring/decimal"
 
 	"github.com/yourorg/eth-perp-system/internal/config"
 	"github.com/yourorg/eth-perp-system/internal/datafeed"
@@ -48,11 +47,11 @@ func (e *TransitionEngine) Evaluate(ctx *datafeed.MarketContext) *Signal {
 	}
 	volCompression := 1 - vol5m/volBase1h
 
-	// 2. OI_delta_5min 显著 |delta| > 1%（使用 OIDelta30s * 10 近似 5min）
-	oiDelta5m, _ := ctx.OIDelta30s.Mul(decimal.NewFromInt(10)).Float64()
+	// 2. OI_delta_5min 显著 |delta| > 1%（使用真实5分钟窗口 OIDelta5m）
 	if ctx.OIBaseline.IsZero() {
 		return nil
 	}
+	oiDelta5m, _ := ctx.OIDelta5m.Float64()
 	baseline, _ := ctx.OIBaseline.Float64()
 	oiDeltaPct := math.Abs(oiDelta5m) / baseline
 	if oiDeltaPct < 0.01 {
@@ -71,8 +70,8 @@ func (e *TransitionEngine) Evaluate(ctx *datafeed.MarketContext) *Signal {
 		return nil
 	}
 
-	// Direction: OI 方向 + RCVD30s + price momentum 三者一致
-	oiDir := ctx.OIDelta30s.IsPositive()
+	// Direction: OI5m + RCVD30s + price momentum 三者一致
+	oiDir := ctx.OIDelta5m.IsPositive()
 	rcvdDir := ctx.RCVD30s.IsPositive()
 	pmDir := ctx.PriceMomentum1m.IsPositive()
 

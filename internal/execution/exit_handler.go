@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -25,6 +26,7 @@ const (
 	ExitReasonTakeProfit     ExitReason = "TAKE_PROFIT"
 	ExitReasonSignalReversal ExitReason = "SIGNAL_REVERSAL"
 	ExitReasonTimeout        ExitReason = "TIMEOUT_EXIT"
+	ExitReasonManual         ExitReason = "MANUAL_CLOSE"
 )
 
 // TradeHandler 开仓/平仓全流程管理（串行，单 goroutine）
@@ -217,14 +219,17 @@ func (h *TradeHandler) CheckAndExit(ctx context.Context, markPrice decimal.Decim
 		return
 	}
 
-	// Priority 3: 止盈
-	if pos.UnrealizedPnLPct.GreaterThanOrEqual(tpPct) {
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		if !h.pm.IsFlat() {
-			h.doClose(ctx, ExitReasonTakeProfit)
+	// Priority 3: 固定止盈（信号模式下跳过，由 TryReversal 窗口确认控制）
+	if !lp.SignalBasedExit && pos.UnrealizedPnLPct.GreaterThanOrEqual(tpPct) {
+		minMs := lp.MinHoldingTimeSec * 1000
+		if h.pm.HoldingMs() >= minMs {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			if !h.pm.IsFlat() {
+				h.doClose(ctx, ExitReasonTakeProfit)
+			}
+			return
 		}
-		return
 	}
 
 	// Priority 5: 持仓超时
@@ -239,7 +244,8 @@ func (h *TradeHandler) CheckAndExit(ctx context.Context, markPrice decimal.Decim
 }
 
 // TryReversal 反向信号触发平仓（Priority 4）
-func (h *TradeHandler) TryReversal(ctx context.Context, newDir datafeed.Direction) {
+// 传入 mctx 供信号模式下做多窗口确认
+func (h *TradeHandler) TryReversal(ctx context.Context, newDir datafeed.Direction, mctx *datafeed.MarketContext) {
 	if h.pm.IsFlat() {
 		return
 	}
@@ -247,15 +253,37 @@ func (h *TradeHandler) TryReversal(ctx context.Context, newDir datafeed.Directio
 	if pos.Direction == newDir {
 		return
 	}
-	minMs := h.params.Get().MinHoldingTimeSec * 1000
+	lp := h.params.Get()
+	minMs := lp.MinHoldingTimeSec * 1000
 	if h.pm.HoldingMs() < minMs {
 		return
 	}
+
+	if lp.SignalBasedExit {
+		// 信号模式：多窗口一致性确认才平仓，防短期噪音
+		if mctx == nil || !windowsConfirmReversal(newDir, mctx) {
+			return
+		}
+	}
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if !h.pm.IsFlat() {
 		h.doClose(ctx, ExitReasonSignalReversal)
 	}
+}
+
+// windowsConfirmReversal 检查多个时间窗口是否均支持反转方向
+// RCVD 两个窗口都要满足（防短期噪音），OI 满足其一即可（OI 变化比价格慢）
+func windowsConfirmReversal(newDir datafeed.Direction, mctx *datafeed.MarketContext) bool {
+	isLong := newDir == datafeed.DirectionLong
+
+	rcvd5sOk := mctx.RCVD5s.IsPositive() == isLong
+	rcvd30sOk := mctx.RCVD30s.IsPositive() == isLong
+	oi5sOk := mctx.OIDelta5s.IsPositive() == isLong
+	oi30sOk := mctx.OIDelta30s.IsPositive() == isLong
+
+	return rcvd5sOk && rcvd30sOk && (oi5sOk || oi30sOk)
 }
 
 // doClose 执行平仓（调用者必须持有 h.mu）
@@ -313,6 +341,79 @@ func (h *TradeHandler) doClose(ctx context.Context, reason ExitReason) {
 			"holding_ms": time.Now().UnixMilli() - prev.EntryTime,
 		})
 	}
+}
+
+// ManualOpen 手动开仓（绕过引擎信号，保留安全检查）
+func (h *TradeHandler) ManualOpen(ctx context.Context, dir datafeed.Direction) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if !h.pm.IsFlat() {
+		return fmt.Errorf("already in position")
+	}
+	if !h.om.HasCredentials() {
+		return fmt.Errorf("missing API credentials")
+	}
+	if !h.sm.CanOpen() {
+		return fmt.Errorf("state %s does not allow opening", h.sm.Current())
+	}
+
+	lp := h.params.Get()
+	qty, err := decimal.NewFromString(lp.LotSize)
+	if err != nil || qty.IsZero() || qty.IsNegative() {
+		return fmt.Errorf("invalid lot size: %s", lp.LotSize)
+	}
+
+	fillPrice, _, err := h.om.OpenMarket(ctx, dir, qty)
+	if err != nil {
+		return fmt.Errorf("open market: %w", err)
+	}
+	if fillPrice.IsZero() {
+		return fmt.Errorf("fill price is zero after open")
+	}
+
+	h.pm.Open(dir, qty, fillPrice)
+	h.metrics.PositionChanged("open")
+
+	guardDeadline := lp.GuardDeadlineMs
+	if guardDeadline <= 0 {
+		guardDeadline = 150
+	}
+	deadline := time.Now().Add(time.Duration(guardDeadline) * time.Millisecond)
+	guardCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+
+	slPrice, tpPrice := h.computeGuardPrices(dir, fillPrice)
+	slID, slErr := h.om.PlaceStopLoss(guardCtx, dir, qty, slPrice)
+	tpID, tpErr := h.om.PlaceTakeProfit(guardCtx, dir, qty, tpPrice)
+
+	if slErr != nil || tpErr != nil {
+		h.doClose(ctx, ExitReasonEmergency)
+		return fmt.Errorf("guard orders failed (sl=%v tp=%v), emergency closed", slErr, tpErr)
+	}
+	h.pm.SetGuardOrders(slID, tpID)
+
+	if h.events != nil {
+		h.events.Add("MANUAL_OPEN", "手动开仓", map[string]interface{}{
+			"dir":   dirStr(dir),
+			"qty":   qty.String(),
+			"entry": fillPrice.String(),
+			"sl":    slPrice.String(),
+			"tp":    tpPrice.String(),
+		})
+	}
+	return nil
+}
+
+// ManualClose 手动平仓
+func (h *TradeHandler) ManualClose(ctx context.Context) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.pm.IsFlat() {
+		return fmt.Errorf("no open position to close")
+	}
+	h.doClose(ctx, ExitReasonManual)
+	return nil
 }
 
 func (h *TradeHandler) addReject(eventType, message string, fields map[string]interface{}) {

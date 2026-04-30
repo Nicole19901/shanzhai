@@ -28,6 +28,7 @@ type OITracker struct {
 	// 派生指标
 	delta5s  decimal.Decimal
 	delta30s decimal.Decimal
+	delta5m  decimal.Decimal // 真实5分钟窗口（300_000ms）
 	velocity decimal.Decimal
 	accel    decimal.Decimal
 	baseline decimal.Decimal // 30min 平均 OI 作为 baseline
@@ -92,6 +93,7 @@ func (t *OITracker) recompute() {
 
 	t.delta5s = t.deltaFrom(cur, 5_000)
 	t.delta30s = t.deltaFrom(cur, 30_000)
+	t.delta5m = t.deltaFrom(cur, 300_000)
 
 	// velocity = delta30s / 30s
 	t.velocity = t.delta30s.Div(decimal.NewFromInt(30))
@@ -147,6 +149,7 @@ func (t *OITracker) velocityAt(targetTs int64) decimal.Decimal {
 type OISnapshot struct {
 	Delta5s         decimal.Decimal
 	Delta30s        decimal.Decimal
+	Delta5m         decimal.Decimal // 真实5分钟窗口
 	Velocity        decimal.Decimal
 	Accel           decimal.Decimal
 	Baseline        decimal.Decimal
@@ -159,6 +162,7 @@ func (t *OITracker) Snapshot() OISnapshot {
 	return OISnapshot{
 		Delta5s:         t.delta5s,
 		Delta30s:        t.delta30s,
+		Delta5m:         t.delta5m,
 		Velocity:        t.velocity,
 		Accel:           t.accel,
 		Baseline:        t.baseline,

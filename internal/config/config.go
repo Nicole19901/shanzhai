@@ -136,7 +136,7 @@ func Load(path string) (*Config, error) {
 	cfg.Trading.LotSize = ls
 
 	if err := validate(&cfg); err != nil {
-		panic(fmt.Sprintf("config validation failed: %v", err))
+		return nil, fmt.Errorf("config validation failed: %w", err)
 	}
 
 	return &cfg, nil

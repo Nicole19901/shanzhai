@@ -45,6 +45,12 @@ type LiveParams struct {
 	ConsecutiveLossLimit        int
 	BTCCorrelationLockThreshold float64
 
+	// ── 微观结构 ─────────────────────────────────────────
+	DepthLevels int // 吃单深度档位 1-20，默认 5
+
+	// ── 平仓模式 ─────────────────────────────────────────
+	SignalBasedExit bool // true=信号窗口确认平仓，false=固定止盈
+
 	// 初始默认值（只读，Init 时固定）
 	defaults LiveParamsSnapshot
 }
@@ -79,6 +85,8 @@ type LiveParamsSnapshot struct {
 	DailyLossLimitPct           float64 `json:"daily_loss_limit_pct"`
 	ConsecutiveLossLimit        int     `json:"consecutive_loss_limit"`
 	BTCCorrelationLockThreshold float64 `json:"btc_correlation_lock_threshold"`
+	DepthLevels                 int     `json:"depth_levels"`
+	SignalBasedExit             bool    `json:"signal_based_exit"`
 }
 
 func NewLiveParams(cfg *config.Config) *LiveParams {
@@ -111,6 +119,7 @@ func NewLiveParams(cfg *config.Config) *LiveParams {
 		DailyLossLimitPct:           cfg.Risk.DailyLossLimitPct,
 		ConsecutiveLossLimit:        cfg.Risk.ConsecutiveLossLimit,
 		BTCCorrelationLockThreshold: cfg.Risk.BTCCorrelationLockThreshold,
+		DepthLevels:                 5,
 	}
 	lp := &LiveParams{defaults: snap}
 	lp.apply(snap)
@@ -149,6 +158,8 @@ func (lp *LiveParams) Get() LiveParamsSnapshot {
 		DailyLossLimitPct:           lp.DailyLossLimitPct,
 		ConsecutiveLossLimit:        lp.ConsecutiveLossLimit,
 		BTCCorrelationLockThreshold: lp.BTCCorrelationLockThreshold,
+		DepthLevels:                 lp.DepthLevels,
+		SignalBasedExit:             lp.SignalBasedExit,
 	}
 }
 
@@ -207,6 +218,8 @@ func (lp *LiveParams) snapshotLocked() LiveParamsSnapshot {
 		DailyLossLimitPct:           lp.DailyLossLimitPct,
 		ConsecutiveLossLimit:        lp.ConsecutiveLossLimit,
 		BTCCorrelationLockThreshold: lp.BTCCorrelationLockThreshold,
+		DepthLevels:                 lp.DepthLevels,
+		SignalBasedExit:             lp.SignalBasedExit,
 	}
 }
 
@@ -249,4 +262,12 @@ func (lp *LiveParams) apply(s LiveParamsSnapshot) {
 	lp.DailyLossLimitPct = s.DailyLossLimitPct
 	lp.ConsecutiveLossLimit = s.ConsecutiveLossLimit
 	lp.BTCCorrelationLockThreshold = s.BTCCorrelationLockThreshold
+	if s.DepthLevels < 1 {
+		s.DepthLevels = 5
+	}
+	if s.DepthLevels > 20 {
+		s.DepthLevels = 20
+	}
+	lp.DepthLevels = s.DepthLevels
+	lp.SignalBasedExit = s.SignalBasedExit
 }

@@ -220,6 +220,21 @@ func (c *RESTClient) PlaceOrder(ctx context.Context, req OrderRequest) (*OrderRe
 	}, nil
 }
 
+// ValidateSymbol 检查币对是否在币安合约市场存在（无需签名）
+func (c *RESTClient) ValidateSymbol(ctx context.Context, symbol string) (bool, error) {
+	resp, err := c.get(ctx, "/fapi/v1/ticker/price", map[string]string{"symbol": symbol})
+	if err != nil {
+		return false, err
+	}
+	var result struct {
+		Symbol string `json:"symbol"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return false, err
+	}
+	return result.Symbol == symbol, nil
+}
+
 // SetLeverage POST /fapi/v1/leverage (signed)
 func (c *RESTClient) SetLeverage(ctx context.Context, symbol string, leverage int) error {
 	_, err := c.signedPost(ctx, "/fapi/v1/leverage", map[string]string{

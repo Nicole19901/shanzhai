@@ -51,31 +51,28 @@ func (e *TrendEngine) Evaluate(ctx *datafeed.MarketContext) *Signal {
 		return nil
 	}
 
-	// 2. RCVD30s 方向与 OI 一致
+	// 2. 方向判断：OI + RCVD + price momentum
 	rcvd30s := ctx.RCVD30s
 	oidelta30s := ctx.OIDelta30s
 
 	var dir datafeed.Direction
 	if oidelta30s.IsPositive() && rcvd30s.IsPositive() {
+		// 做多：OI 增长 + 买压
 		dir = datafeed.DirectionLong
-	} else if oidelta30s.IsPositive() && rcvd30s.IsNegative() {
+	} else if rcvd30s.IsNegative() && (oidelta30s.IsPositive() || ctx.OIDelta5s.IsNegative()) {
+		// 做空：卖压 + (OI 增长说明新空单入场 OR OI 快速下降说明多头清出)
 		dir = datafeed.DirectionShort
 	} else {
 		return nil
 	}
 
-	// 3. BTC 趋势一致
-	if ctx.BTCTrend1m != dir && ctx.BTCTrend1m != datafeed.DirectionFlat {
-		return nil
-	}
-
-	// 4. |funding_rate| < 0.05%/8h
+	// 3. |funding_rate| < 0.1%/8h（放宽阈值，原来 0.05% 过于保守）
 	frAbs, _ := ctx.FundingRate.Abs().Float64()
-	if frAbs >= 0.0005 {
+	if frAbs >= 0.001 {
 		return nil
 	}
 
-	// 5. price momentum 方向一致
+	// 4. price momentum 方向一致
 	pm := ctx.PriceMomentum1m
 	if dir == datafeed.DirectionLong && pm.IsNegative() {
 		return nil
@@ -84,22 +81,22 @@ func (e *TrendEngine) Evaluate(ctx *datafeed.MarketContext) *Signal {
 		return nil
 	}
 
-	// Confidence
+	// Confidence：做空额外奖励 OI 双向确认
 	rcvdStrength, _ := rcvd30s.Abs().Float64()
-	btcAlign := 1.0
-	if ctx.BTCTrend1m == dir {
-		btcAlign = 1.0
-	} else {
-		btcAlign = 0.5
-	}
 	pmVal, _ := pm.Abs().Float64()
-	frPenalty := 1 - frAbs/0.0005
+	frPenalty := 1 - frAbs/0.001
 
-	confidence := 0.25*normalize(oiStrength, 0, 0.02) +
+	shortOIBonus := 0.0
+	if dir == datafeed.DirectionShort && ctx.OIDelta5s.IsNegative() {
+		oi5sAbs, _ := ctx.OIDelta5s.Abs().Float64()
+		shortOIBonus = normalize(oi5sAbs, 0, 0.005) * 0.10
+	}
+
+	confidence := 0.30*normalize(oiStrength, 0, 0.02) +
 		0.25*normalize(rcvdStrength, 0, 100) +
-		0.25*normalize(btcAlign, 0, 1) +
-		0.15*normalize(pmVal, 0, 0.005) +
-		0.10*normalize(frPenalty, 0, 1)
+		0.20*normalize(pmVal, 0, 0.005) +
+		0.15*normalize(frPenalty, 0, 1) +
+		0.10 + shortOIBonus
 
 	if confidence < cfg.ConfidenceThreshold {
 		return nil

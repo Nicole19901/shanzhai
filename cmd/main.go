@@ -62,7 +62,7 @@ func main() {
 	eventLog := webui.NewEventLog(300)
 
 	// 管理后台（:8080）
-	admin := webui.NewServer(liveParams, eventLog, rest, cfg.WebUI.ServiceName)
+	admin := webui.NewServer(liveParams, eventLog, rest, cfg.WebUI.ServiceName, cfg.Trading.Symbol)
 	admin.Listen(cfg.WebUI.Addr)
 
 	pm := execution.NewPositionManager(cfg.Trading.Symbol)
@@ -73,11 +73,12 @@ func main() {
 	})
 
 	guard := risk.NewGuardrails(cfg.Risk.DailyLossLimitPct, cfg.Risk.ConsecutiveLossLimit)
-	btcAnchor := risk.NewBTCAnchor(cfg.Risk)
 	slippageEst := risk.NewSlippageEstimator()
 
 	omgr := execution.NewOrderManager(rest, cfg, metrics)
 	tradeHandler := execution.NewTradeHandler(pm, omgr, sm, guard, cfg, liveParams, eventLog, metrics)
+
+	admin.SetManualTrader(tradeHandler)
 
 	recon := execution.NewReconciliationLoop(
 		rest, pm, omgr, sm, cfg.Trading.Symbol,
@@ -215,8 +216,6 @@ func main() {
 					continue
 				}
 				tradeFlow.Add(t)
-				price, _ := t.Price.Float64()
-				btcAnchor.AddETHPrice(price)
 			}
 		}
 	})
@@ -235,7 +234,7 @@ func main() {
 					metrics.DataError("eth_depth", "stale")
 					continue
 				}
-				orderBook.Update(d)
+				orderBook.Update(d, liveParams.Get().DepthLevels)
 				microstructure.UpdateSpreadBaseline(orderBook.SpreadBps())
 			}
 		}
@@ -295,7 +294,6 @@ func main() {
 	// BTC markPrice → trend direction
 	start("btc_markprice_handler", func() {
 		var btcKline1mClose, btcKline5mClose [5]decimal.Decimal
-		var idx1m, idx5m int
 		var count1m, count5m int64
 		ticker1m := time.NewTicker(time.Minute)
 		ticker5m := time.NewTicker(5 * time.Minute)
@@ -312,8 +310,6 @@ func main() {
 				}
 				atomic.AddInt64(&btcMsgCount, 1)
 				latestBTCMark.Store(mp.MarkPrice)
-				price, _ := mp.MarkPrice.Float64()
-				btcAnchor.AddBTCPrice(price)
 			case <-ticker1m.C:
 				cur := latestBTCMark.Load().(decimal.Decimal)
 				prev := prevBTCClose1m.Load().(decimal.Decimal)
@@ -329,7 +325,6 @@ func main() {
 							latestBTCTrend1m.Store(int32(datafeed.DirectionShort))
 						}
 					}
-					_ = idx1m
 				}
 				prevBTCClose1m.Store(cur)
 			case <-ticker5m.C:
@@ -346,7 +341,6 @@ func main() {
 							latestBTCTrend5m.Store(int32(datafeed.DirectionShort))
 						}
 					}
-					_ = idx5m
 				}
 				prevBTCClose5m.Store(cur)
 			}
@@ -426,6 +420,7 @@ func main() {
 
 					OIDelta5s:  oi.Delta5s,
 					OIDelta30s: oi.Delta30s,
+					OIDelta5m:  oi.Delta5m,
 					OIVelocity: oi.Velocity,
 					OIAccel:    oi.Accel,
 					OIBaseline: oi.Baseline,
@@ -459,8 +454,10 @@ func main() {
 				transEng.SetConfig(lp.TransitionEnabled, lp.TransitionConfidence, lp.VolCompressionRatio)
 
 				for _, eng := range engines {
-					if (eng.Name() == engine.EngineTrend || eng.Name() == engine.EngineTransition) &&
-						!sm.CanOpenTrend() {
+					if eng.Name() == engine.EngineTrend && !sm.CanOpenTrend() {
+						continue
+					}
+					if eng.Name() == engine.EngineTransition && !sm.CanOpen() {
 						continue
 					}
 					if eng.Name() == engine.EngineSqueeze && !sm.CanOpen() {
@@ -473,19 +470,6 @@ func main() {
 					}
 
 					metrics.SignalGenerated(string(eng.Name()), dirLabel(sig.Direction))
-
-					rawEngine := sig.Engine
-					rawDir := sig.Direction
-					sig = btcAnchor.Adjust(sig, mctx.BTCTrend1m, mctx.BTCTrend5m)
-					if sig == nil {
-						eventLog.AddReject("SIGNAL_REJECTED", "BTC anchor rejected signal", map[string]interface{}{
-							"engine":     string(rawEngine),
-							"dir":        dirLabel(rawDir),
-							"btc_trend1": dirLabel(mctx.BTCTrend1m),
-							"btc_trend5": dirLabel(mctx.BTCTrend5m),
-						})
-						continue
-					}
 
 					// 滑点检查（用 liveParams 的 max_slippage_bps）
 					spreadBps, _ := orderBook.SpreadBps().Float64()
@@ -523,7 +507,7 @@ func main() {
 						continue
 					}
 
-					tradeHandler.TryReversal(ctx, sig.Direction)
+					tradeHandler.TryReversal(ctx, sig.Direction, mctx)
 					tradeHandler.TryOpen(ctx, sig)
 					break
 				}
@@ -548,19 +532,20 @@ func bootCheck(ctx context.Context, rest *datafeed.RESTClient, cfg *config.Confi
 	}
 	risks, err := rest.PositionRisk(ctx, cfg.Trading.Symbol)
 	if err != nil {
-		log.Fatal().Err(err).Msg("boot: cannot fetch position risk")
+		log.Warn().Err(err).Msg("boot: cannot fetch position risk, skipping (credentials can be set via webui)")
+		return
 	}
 	for _, r := range risks {
 		if r.Symbol == cfg.Trading.Symbol && !r.PositionAmt.IsZero() {
-			log.Fatal().Str("amt", r.PositionAmt.String()).
-				Msg("boot: existing position detected, please close manually before starting")
+			log.Warn().Str("amt", r.PositionAmt.String()).
+				Msg("boot: existing position detected, please close manually before trading")
 		}
 	}
 	if err := rest.CancelAllOrders(ctx, cfg.Trading.Symbol); err != nil {
 		log.Warn().Err(err).Msg("boot: cancel all orders (may be empty)")
 	}
 	if err := rest.SetLeverage(ctx, cfg.Trading.Symbol, cfg.Trading.Leverage); err != nil {
-		log.Fatal().Err(err).Msg("boot: set leverage failed")
+		log.Warn().Err(err).Msg("boot: set leverage failed, please check via webui")
 	}
 	if err := rest.SetMarginType(ctx, cfg.Trading.Symbol, cfg.Trading.MarginType); err != nil {
 		log.Warn().Err(err).Msg("boot: set margin type (may already be set)")

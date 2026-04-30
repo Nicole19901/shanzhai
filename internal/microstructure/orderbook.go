@@ -9,7 +9,7 @@ import (
 	"github.com/yourorg/eth-perp-system/internal/datafeed"
 )
 
-const maxDepthLevels = 5
+const defaultDepthLevels = 5
 
 type levelState struct {
 	qty       decimal.Decimal
@@ -35,13 +35,16 @@ func NewOrderBook() *OrderBook {
 	}
 }
 
-func (ob *OrderBook) Update(update *datafeed.DepthUpdate) {
+func (ob *OrderBook) Update(update *datafeed.DepthUpdate, depthLevels int) {
+	if depthLevels < 1 {
+		depthLevels = defaultDepthLevels
+	}
 	now := update.LocalTime
 	ob.mu.Lock()
 	defer ob.mu.Unlock()
 
-	ob.updateSide(ob.bids, topN(update.Bids, maxDepthLevels, false), now)
-	ob.updateSide(ob.asks, topN(update.Asks, maxDepthLevels, true), now)
+	ob.updateSide(ob.bids, topN(update.Bids, depthLevels, false), now)
+	ob.updateSide(ob.asks, topN(update.Asks, depthLevels, true), now)
 }
 
 func (ob *OrderBook) updateSide(side map[string]*levelState, levels []datafeed.PriceLevel, now int64) {

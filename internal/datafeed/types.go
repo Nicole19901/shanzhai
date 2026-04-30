@@ -80,6 +80,7 @@ type MarketContext struct {
 
 	OIDelta5s   decimal.Decimal
 	OIDelta30s  decimal.Decimal
+	OIDelta5m   decimal.Decimal // 真实5分钟OI变化量
 	OIVelocity  decimal.Decimal
 	OIAccel     decimal.Decimal
 	OIBaseline  decimal.Decimal

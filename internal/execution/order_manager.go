@@ -149,6 +149,11 @@ func (om *OrderManager) CloseMarket(ctx context.Context, dir datafeed.Direction,
 
 	var lastErr error
 	for attempt := 1; attempt <= om.cfg.Execution.MaxOrderRetry; attempt++ {
+		select {
+		case <-ctx.Done():
+			return decimal.Zero, ctx.Err()
+		default:
+		}
 		ctx2, cancel := context.WithTimeout(ctx, time.Duration(om.cfg.Execution.OrderTimeoutMs)*time.Millisecond)
 		resp, err := om.rest.PlaceOrder(ctx2, req)
 		cancel()
