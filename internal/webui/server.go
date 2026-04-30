@@ -22,18 +22,17 @@ const (
 	adminPass = "XTa4IsndYQe_NdEy"
 )
 
-// ManualTrader 允许前端手动开平仓（由 execution.TradeHandler 实现）
+// ManualTrader allows the UI to request guarded manual trades.
 type ManualTrader interface {
 	ManualOpen(ctx context.Context, dir datafeed.Direction) error
 	ManualClose(ctx context.Context) error
 }
 
-// keyEntry 保存的API密钥条目
 type keyEntry struct {
-	Label     string    `json:"label"`
-	APIKey    string    `json:"api_key_masked"` // 展示时已遮罩
-	apiKey    string    // 原始key（不序列化）
-	apiSecret string    // 原始secret（不序列化）
+	Label     string `json:"label"`
+	APIKey    string `json:"api_key_masked"`
+	apiKey    string
+	apiSecret string
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -95,7 +94,6 @@ func (ks *keyStore) list() []keyEntry {
 	return out
 }
 
-// Server WebUI 管理后台
 type Server struct {
 	params      *LiveParams
 	events      *EventLog
@@ -106,7 +104,8 @@ type Server struct {
 	symbolMu     sync.RWMutex
 	activeSymbol string
 
-	trader ManualTrader
+	trader       ManualTrader
+	switchSymbol func(context.Context, string) error
 }
 
 func NewServer(params *LiveParams, events *EventLog, rest *datafeed.RESTClient, serviceName, symbol string) *Server {
@@ -124,6 +123,8 @@ func NewServer(params *LiveParams, events *EventLog, rest *datafeed.RESTClient, 
 }
 
 func (s *Server) SetManualTrader(t ManualTrader) { s.trader = t }
+
+func (s *Server) SetSymbolSwitcher(fn func(context.Context, string) error) { s.switchSymbol = fn }
 
 func (s *Server) SetSymbol(sym string) {
 	s.symbolMu.Lock()
@@ -149,14 +150,9 @@ func (s *Server) Listen(addr string) {
 	mux.HandleFunc("/api/control/start", s.auth(s.handleStart))
 	mux.HandleFunc("/api/control/stop", s.auth(s.handleStop))
 	mux.HandleFunc("/api/control/restart", s.auth(s.handleRestart))
-	// 多密钥管理
-	mux.HandleFunc("/api/keys", s.auth(s.handleKeys))
 	mux.HandleFunc("/api/keys/activate", s.auth(s.handleKeyActivate))
 	mux.HandleFunc("/api/keys/delete", s.auth(s.handleKeyDelete))
-	// 选币器
-	mux.HandleFunc("/api/symbol", s.auth(s.handleSymbol))
 	mux.HandleFunc("/api/symbol/validate", s.auth(s.handleSymbolValidate))
-	// 手动开平仓
 	mux.HandleFunc("/api/trade/open", s.auth(s.handleTradeOpen))
 	mux.HandleFunc("/api/trade/close", s.auth(s.handleTradeClose))
 
@@ -170,8 +166,6 @@ func (s *Server) Listen(addr string) {
 		}
 	}()
 }
-
-// ── 凭证管理 ──────────────────────────────────────────────────────────────
 
 type credentialRequest struct {
 	APIKey    string `json:"api_key"`
@@ -215,7 +209,6 @@ func (s *Server) handleCredentials(w http.ResponseWriter, r *http.Request, apply
 		return
 	}
 
-	// 同时拉取持仓方向
 	positions, posErr := probe.PositionRisk(ctx, s.getSymbol())
 	if posErr != nil {
 		log.Warn().Err(posErr).Msg("webui: position risk fetch failed during key verify")
@@ -234,11 +227,11 @@ func (s *Server) handleCredentials(w http.ResponseWriter, r *http.Request, apply
 	posInfo := make([]map[string]interface{}, 0, len(positions))
 	for _, p := range positions {
 		posInfo = append(posInfo, map[string]interface{}{
-			"symbol":    p.Symbol,
-			"amount":    p.PositionAmt.String(),
-			"entry":     p.EntryPrice.String(),
-			"pnl":       p.UnRealizedProfit.String(),
-			"side":      positionSide(p),
+			"symbol": p.Symbol,
+			"amount": p.PositionAmt.String(),
+			"entry":  p.EntryPrice.String(),
+			"pnl":    p.UnRealizedProfit.String(),
+			"side":   positionSide(p),
 		})
 	}
 
@@ -259,8 +252,6 @@ func positionSide(p datafeed.PositionRisk) string {
 	}
 	return "FLAT"
 }
-
-// ── 多密钥管理 ────────────────────────────────────────────────────────────
 
 func (s *Server) handleKeys(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -332,12 +323,37 @@ func (s *Server) handleKeyDelete(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ── 选币器 ────────────────────────────────────────────────────────────────
-
 func (s *Server) handleSymbol(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		writeJSON(w, map[string]string{"symbol": s.getSymbol()})
+	case http.MethodPost:
+		var req struct {
+			Symbol  string `json:"symbol"`
+			Confirm string `json:"confirm"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+		sym := normalizeSymbol(req.Symbol)
+		if sym == "" || req.Confirm != sym {
+			http.Error(w, "confirm must exactly match normalized symbol "+sym, http.StatusBadRequest)
+			return
+		}
+		if s.switchSymbol == nil {
+			http.Error(w, "runtime symbol switcher not initialized", http.StatusServiceUnavailable)
+			return
+		}
+		if err := s.switchSymbol(r.Context(), sym); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.SetSymbol(sym)
+		if s.events != nil {
+			s.events.AddSystem("SYMBOL_SWITCHED", "runtime symbol switched", map[string]interface{}{"symbol": sym})
+		}
+		writeJSON(w, map[string]string{"status": "ok", "symbol": sym})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -355,14 +371,10 @@ func (s *Server) handleSymbolValidate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	sym := strings.ToUpper(strings.TrimSpace(req.Symbol))
+	sym := normalizeSymbol(req.Symbol)
 	if sym == "" {
 		http.Error(w, "symbol is required", http.StatusBadRequest)
 		return
-	}
-	// 如果用户只输入了基础币（如 BTC），自动拼接 USDT
-	if !strings.Contains(sym, "USDT") && !strings.Contains(sym, "BUSD") {
-		sym = sym + "USDT"
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -378,7 +390,16 @@ func (s *Server) handleSymbolValidate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{"valid": true, "symbol": sym})
 }
 
-// ── 手动开平仓 ────────────────────────────────────────────────────────────
+func normalizeSymbol(input string) string {
+	sym := strings.ToUpper(strings.TrimSpace(input))
+	if sym == "" {
+		return ""
+	}
+	if !strings.HasSuffix(sym, "USDT") && !strings.HasSuffix(sym, "BUSD") && !strings.HasSuffix(sym, "USDC") {
+		sym += "USDT"
+	}
+	return sym
+}
 
 func (s *Server) handleTradeOpen(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -429,8 +450,6 @@ func (s *Server) handleTradeClose(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
-// ── 参数管理 ──────────────────────────────────────────────────────────────
-
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
@@ -472,6 +491,14 @@ func (s *Server) handleParams(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.params.Update(snap)
+		if s.rest.HasCredentials() {
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			defer cancel()
+			if err := s.rest.SetLeverage(ctx, s.getSymbol(), snap.Leverage); err != nil {
+				http.Error(w, "set leverage failed: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
 		log.Info().Interface("params", snap).Msg("webui: params updated")
 		writeJSON(w, map[string]interface{}{"status": "ok", "current": s.params.Get()})
 	default:
@@ -527,9 +554,11 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleStop(w http.ResponseWriter, r *http.Request)    { s.handleControl(w, r, "stop") }
-func (s *Server) handleStart(w http.ResponseWriter, r *http.Request)   { s.handleControl(w, r, "start") }
-func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) { s.handleControl(w, r, "restart") }
+func (s *Server) handleStop(w http.ResponseWriter, r *http.Request)  { s.handleControl(w, r, "stop") }
+func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) { s.handleControl(w, r, "start") }
+func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
+	s.handleControl(w, r, "restart")
+}
 
 func (s *Server) handleControl(w http.ResponseWriter, r *http.Request, action string) {
 	if r.Method != http.MethodPost {
@@ -566,8 +595,8 @@ func validateSnapshot(s LiveParamsSnapshot) error {
 	if s.MinHoldingTimeSec > s.MaxHoldingTimeSec {
 		return fmt.Errorf("min_holding_time_sec cannot exceed max_holding_time_sec")
 	}
-	if s.LotSize == "" {
-		return fmt.Errorf("lot_size is required")
+	if s.LotSize == "" && s.MarginUSDT == "" {
+		return fmt.Errorf("margin_usdt is required")
 	}
 	if s.Leverage < 1 || s.Leverage > 10 {
 		return fmt.Errorf("leverage must be in [1, 10]")
@@ -617,7 +646,7 @@ const adminHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>量化交易控制台</title>
+<title>闂傚倷鐒﹁ぐ鍐崲閹邦喒鍋撻棃娑樼骇缂佸倸绉规俊鍫曞幢濮楀棙寤洪梻浣侯攰閻洭宕橀妸褍骞€闂?/title>
 <style>
 *{box-sizing:border-box}
 body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#101418;color:#e8edf2;padding:20px}
@@ -680,132 +709,131 @@ button:disabled{opacity:.4;cursor:not-allowed}
 </head>
 <body>
 <div class="top">
-  <h1>量化交易控制台</h1>
+  <h1>閲忓寲浜ゆ槗鎺у埗鍙?/h1>
   <div style="display:flex;gap:8px;flex-wrap:wrap">
-    <span class="badge symbol" id="symbolBadge">交易对: ...</span>
-    <span class="badge" id="posBadge">持仓: --</span>
+    <span class="badge symbol" id="symbolBadge">浜ゆ槗瀵?...</span>
+    <span class="badge" id="posBadge">鎸佷粨: --</span>
   </div>
 </div>
 
-<!-- 参数表单 -->
 <form id="form">
 <div class="grid" id="grid"></div>
 <div class="actions">
-  <button class="btn-save" type="submit">保存参数</button>
-  <button class="btn-restart" type="button" id="testParamsBtn">测试开单参数</button>
-  <button class="btn-init" type="button" id="initBtn">初始化为当前参数</button>
-  <button class="btn-reset" type="button" id="resetBtn">恢复初始化值</button>
-  <button class="btn-start" type="button" id="startBtn">启动系统</button>
-  <button class="btn-restart" type="button" id="restartBtn">重启系统</button>
-  <button class="btn-stop" type="button" id="stopBtn">停止系统</button>
+  <button class="btn-save" type="submit">淇濆瓨鍙傛暟</button>
+  <button class="btn-restart" type="button" id="testParamsBtn">娴嬭瘯寮€鍗曞弬鏁?/button>
+  <button class="btn-init" type="button" id="initBtn">鍒濆鍖栦负褰撳墠鍙傛暟</button>
+  <button class="btn-reset" type="button" id="resetBtn">鎭㈠鍒濆鍖栧€?/button>
+  <button class="btn-start" type="button" id="startBtn">鍚姩绯荤粺</button>
+  <button class="btn-restart" type="button" id="restartBtn">閲嶅惎绯荤粺</button>
+  <button class="btn-stop" type="button" id="stopBtn">鍋滄绯荤粺</button>
 </div>
 <div id="msg" class="msg"></div>
 </form>
 
-<!-- 手动交易 -->
 <section class="card" style="margin-top:14px">
-  <h2>手动交易</h2>
-  <div style="font-size:13px;color:#8b949e;margin-bottom:10px">按安全条件（无持仓、有凭证、状态允许）执行手动操作，绕过引擎信号</div>
+  <h2>鎵嬪姩浜ゆ槗</h2>
+  <div style="font-size:13px;color:#8b949e;margin-bottom:10px">鎸夊畨鍏ㄦ潯浠舵墽琛屾墜鍔ㄦ搷浣滐細鏃犳寔浠撱€佹湁鍑瘉銆佺姸鎬佸厑璁搞€傛墜鍔ㄤ氦鏄撶粫杩囧紩鎿庝俊鍙枫€?/div>
   <div class="actions">
-    <button class="btn-long" id="manualLongBtn">▲ 手动做多</button>
-    <button class="btn-short" id="manualShortBtn">▼ 手动做空</button>
-    <button class="btn-close" id="manualCloseBtn">■ 手动平仓</button>
+    <button class="btn-long" id="manualLongBtn">鎵嬪姩鍋氬</button>
+    <button class="btn-short" id="manualShortBtn">鎵嬪姩鍋氱┖</button>
+    <button class="btn-close" id="manualCloseBtn">鎵嬪姩骞充粨</button>
   </div>
   <div id="tradeMsg" class="msg"></div>
 </section>
 
-<!-- 选币器 -->
 <section class="card" style="margin-top:14px">
-  <h2>交易对切换</h2>
+  <h2>浜ゆ槗瀵瑰垏鎹?/h2>
   <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
     <div class="field" style="flex:1;min-width:160px;margin:0">
-      <label for="symbolInput">输入币种（如 BTC 或 BTCUSDT）</label>
+      <label for="symbolInput">杈撳叆甯佺锛屽 BTC 鎴?BTCUSDT</label>
       <input id="symbolInput" type="text" placeholder="BTCUSDT" autocomplete="off" spellcheck="false">
     </div>
-    <button class="btn-verify" type="button" id="validateSymbolBtn" style="flex-shrink:0">验证币种</button>
+    <button class="btn-verify" type="button" id="validateSymbolBtn" style="flex-shrink:0">楠岃瘉甯佺</button>
+    <button class="btn-apply" type="button" id="applySymbolBtn" style="flex-shrink:0" disabled>鍒囨崲</button>
+  </div>
+  <div class="field" style="max-width:260px;margin-top:8px">
+    <label for="symbolConfirm">闃茶瑙︾‘璁わ細杈撳叆楠岃瘉鍚庣殑瀹屾暣浜ゆ槗瀵?/label>
+    <input id="symbolConfirm" type="text" placeholder="渚嬪 BTCUSDT" autocomplete="off" spellcheck="false">
   </div>
   <div id="symbolResult" style="margin-top:8px;font-size:13px;color:#8b949e"></div>
-  <div style="margin-top:8px;font-size:12px;color:#6e7681">⚠ 切换币种需重启系统生效，验证后可在 config.yaml 中修改 symbol 字段</div>
+  <div style="margin-top:8px;font-size:12px;color:#6e7681">楠岃瘉閫氳繃鍚庡彲鐑垏鎹㈣鎯呫€丱I銆佷笅鍗曚笌瀵硅处浜ゆ槗瀵癸紱宸叉湁鎸佷粨鏃朵細鎷掔粷鍒囨崲銆?/div>
 </section>
 
-<!-- API 密钥管理 -->
 <section class="card" style="margin-top:14px">
-  <h2>API 密钥管理</h2>
+  <h2>API 瀵嗛挜绠＄悊</h2>
   <div class="grid" style="grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
     <div class="field" style="margin:0"><label for="apiKey">API Key</label><input id="apiKey" autocomplete="off" spellcheck="false"></div>
     <div class="field" style="margin:0"><label for="apiSecret">API Secret</label><input id="apiSecret" type="password" autocomplete="off"></div>
   </div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-    <button class="btn-verify" id="verifyKeyBtn">验证余额+持仓</button>
-    <button class="btn-apply" id="applyKeyBtn">验证并应用</button>
-    <button class="btn-neutral" id="clearBalanceBtn">清除</button>
+    <button class="btn-verify" id="verifyKeyBtn">楠岃瘉浣欓鍜屾寔浠?/button>
+    <button class="btn-apply" id="applyKeyBtn">楠岃瘉骞跺簲鐢?/button>
+    <button class="btn-neutral" id="clearBalanceBtn">娓呴櫎</button>
   </div>
   <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;border-top:1px solid #29333d;padding-top:10px;margin-top:6px">
-    <div class="field" style="flex:1;min-width:120px;margin:0"><label for="keyLabel">标签（用于保存）</label><input id="keyLabel" type="text" placeholder="主账号"></div>
-    <button class="btn-neutral" id="saveKeyBtn" style="flex-shrink:0">保存密钥</button>
+    <div class="field" style="flex:1;min-width:120px;margin:0"><label for="keyLabel">鏍囩锛岀敤浜庝繚瀛?/label><input id="keyLabel" type="text" placeholder="涓昏处鎴?></div>
+    <button class="btn-neutral" id="saveKeyBtn" style="flex-shrink:0">淇濆瓨瀵嗛挜</button>
   </div>
   <div id="savedKeys" style="margin-top:10px"></div>
 </section>
 
-<!-- 弹出：余额+持仓详情 -->
 <div class="modal-bg" id="verifyModal">
   <div class="modal">
-    <h3>账户验证结果</h3>
+    <h3>璐︽埛楠岃瘉缁撴灉</h3>
     <div id="modalContent"></div>
     <div class="modal-actions">
-      <button class="btn-apply" id="modalApplyBtn">应用此密钥</button>
-      <button class="btn-neutral" id="modalCancelBtn">关闭</button>
+      <button class="btn-apply" id="modalApplyBtn">搴旂敤姝ゅ瘑閽?/button>
+      <button class="btn-neutral" id="modalCancelBtn">闂備胶顭堢换鎴炵箾婵犲伣?/button>
     </div>
   </div>
 </div>
 
-<!-- 日志 -->
+
 <section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:14px">
   <div class="card">
-    <div class="logbar"><h2 style="margin:0">交易状态</h2><span class="muted" id="tradeHint"></span><button class="btn-neutral" style="padding:4px 8px;font-size:12px" id="clearTradeBtn">清除</button></div>
+        <div class="logbar"><h2 style="margin:0">交易日志</h2><span class="muted" id="tradeHint"></span><button class="btn-neutral" style="padding:4px 8px;font-size:12px" id="clearTradeBtn">清除</button></div>
     <div class="loglist" id="tradeLogs"></div>
   </div>
   <div class="card">
-    <div class="logbar"><h2 style="margin:0">系统日志</h2><span class="muted" id="systemHint"></span><button class="btn-neutral" style="padding:4px 8px;font-size:12px" id="clearSystemBtn">清除</button></div>
+        <div class="logbar"><h2 style="margin:0">系统日志</h2><span class="muted" id="systemHint"></span><button class="btn-neutral" style="padding:4px 8px;font-size:12px" id="clearSystemBtn">清除</button></div>
     <div class="loglist" id="systemLogs"></div>
   </div>
   <div class="card">
-    <div class="logbar"><h2 style="margin:0">拒绝原因</h2><span class="muted" id="rejectHint"></span><button class="btn-neutral" style="padding:4px 8px;font-size:12px" id="clearRejectBtn">清除</button></div>
+        <div class="logbar"><h2 style="margin:0">拒绝日志</h2><span class="muted" id="rejectHint"></span><button class="btn-neutral" style="padding:4px 8px;font-size:12px" id="clearRejectBtn">清除</button></div>
     <div class="loglist" id="rejectLogs"></div>
   </div>
 </section>
 
 <script>
-// ── 参数面板 ──────────────────────────────────────────────────────────
 const groups=[
-{title:'止盈止损',items:[
-['take_profit_pct','range','止盈比例',0.001,0.05,0.001,v=>(v*100).toFixed(2)+'%'],
-['stop_loss_pct','range','止损比例',0.001,0.02,0.001,v=>(v*100).toFixed(2)+'%'],
-['cooldown_after_exit_sec','number','平仓冷却秒',0,300,1,v=>v+'s'],
-['max_holding_time_sec','number','最长持仓秒',60,86400,60,v=>v+'s'],
-['min_holding_time_sec','number','最短持仓秒',0,3600,5,v=>v+'s']]},
-{title:'交易执行',items:[
-['lot_size','number','每笔手数',0.001,100,0.001,v=>String(v)],
-['leverage','number','杠杆倍数',1,10,1,v=>v+'x'],
-['use_maker_mode','checkbox','Maker 模式',0,0,0,v=>v?'开':'关'],
-['maker_offset_bps','range','Maker 偏移 bps',0,20,0.1,v=>v.toFixed(1)+' bps'],
-['guard_deadline_ms','number','保护单截止 ms',100,180,1,v=>v+'ms'],
-['depth_levels','number','吃单深度档位',1,20,1,v=>v+'档'],
-['signal_based_exit','checkbox','信号窗口平仓模式',0,0,0,v=>v?'开(窗口确认)':'关(固定止盈)']]},
-{title:'引擎阈值',items:[
-['trend_enabled','checkbox','趋势引擎',0,0,0,v=>v?'开':'关'],
-['trend_confidence','range','趋势置信度',0.3,0.95,0.01,v=>v.toFixed(2)],
-['oi_delta_threshold','range','OI Delta 阈值',0.001,0.02,0.001,v=>(v*100).toFixed(2)+'%'],
-['squeeze_enabled','checkbox','Squeeze 引擎',0,0,0,v=>v?'开':'关'],
-['squeeze_confidence','range','Squeeze 置信度',0.3,0.95,0.01,v=>v.toFixed(2)],
+{title:'姝㈢泩姝㈡崯',items:[
+['take_profit_pct','range','姝㈢泩姣斾緥',0.001,0.05,0.001,v=>(v*100).toFixed(2)+'%'],
+['stop_loss_pct','range','姝㈡崯姣斾緥',0.001,0.02,0.001,v=>(v*100).toFixed(2)+'%'],
+['cooldown_after_exit_sec','number','骞充粨鍐峰嵈绉?,0,300,1,v=>v+'s'],
+['max_holding_time_sec','number','鏈€闀挎寔浠撶',60,86400,60,v=>v+'s'],
+['min_holding_time_sec','number','鏈€鐭寔浠撶',0,3600,5,v=>v+'s']]},
+{title:'浜ゆ槗鎵ц',items:[
+['margin_usdt','number','姣忕瑪淇濊瘉閲?USDT',1,100000,1,v=>String(v)+' U'],
+['leverage','number','鏉犳潌鍊嶆暟',1,10,1,v=>v+'x'],
+['use_maker_mode','checkbox','Maker 妯″紡',0,0,0,v=>v?'寮€':'鍏?],
+['maker_offset_bps','range','Maker 鍋忕Щ bps',0,20,0.1,v=>v.toFixed(1)+' bps'],
+['guard_deadline_ms','number','淇濇姢鍗曟埅姝?ms',100,180,1,v=>v+'ms'],
+['depth_levels','number','鍚冨崟娣卞害妗ｄ綅',1,20,1,v=>v+'妗?],
+['signal_based_exit','checkbox','淇″彿绐楀彛骞充粨妯″紡',0,0,0,v=>v?'寮€':'鍏?]]},
+{title:'寮曟搸闃堝€?,items:[
+['trend_enabled','checkbox','瓒嬪娍寮曟搸',0,0,0,v=>v?'寮€':'鍏?],
+['trend_confidence','range','瓒嬪娍缃俊搴?,0.3,0.95,0.01,v=>v.toFixed(2)],
+['oi_delta_threshold','range','OI Delta 闃堝€?,0.001,0.02,0.001,v=>(v*100).toFixed(2)+'%'],
+['squeeze_enabled','checkbox','Squeeze 寮曟搸',0,0,0,v=>v?'寮€':'鍏?],
+['squeeze_confidence','range','Squeeze 缃俊搴?,0.3,0.95,0.01,v=>v.toFixed(2)],
 ['basis_zscore_threshold','range','Basis ZScore',1,5,0.1,v=>v.toFixed(1)],
-['transition_enabled','checkbox','Transition 引擎',0,0,0,v=>v?'开':'关'],
-['transition_confidence','range','Transition 置信度',0.3,0.95,0.01,v=>v.toFixed(2)],
-['vol_compression_ratio','range','波动压缩比例',0.1,0.9,0.05,v=>v.toFixed(2)]]},
-{title:'风控',items:[
-['max_slippage_bps','range','最大滑点 bps',1,100,0.5,v=>v.toFixed(1)+' bps'],
-['daily_loss_limit_pct','range','日亏损限制',0.001,0.2,0.001,v=>(v*100).toFixed(2)+'%'],
-['consecutive_loss_limit','number','连续亏损次数',1,20,1,v=>v]]}
+['transition_enabled','checkbox','Transition 寮曟搸',0,0,0,v=>v?'寮€':'鍏?],
+['transition_confidence','range','Transition 缃俊搴?,0.3,0.95,0.01,v=>v.toFixed(2)],
+['vol_compression_ratio','range','娉㈠姩鍘嬬缉姣斾緥',0.1,0.9,0.05,v=>v.toFixed(2)]]},
+{title:'椋庢帶',items:[
+['max_slippage_bps','range','鏈€澶ф粦鐐?bps',1,100,0.5,v=>v.toFixed(1)+' bps'],
+['daily_loss_limit_pct','range','鏃ヤ簭鎹熼檺鍒?,0.001,0.2,0.001,v=>(v*100).toFixed(2)+'%'],
+['consecutive_loss_limit','number','杩炵画浜忔崯娆℃暟',1,20,1,v=>v]]}
 ];
 const fields=[];
 const grid=document.getElementById('grid');
@@ -845,7 +873,7 @@ function collect(){
   const o={};
   for(const it of fields){
     const el=document.getElementById(it[0]);
-    o[it[0]]=it[1]==='checkbox'?el.checked:(it[0]==='lot_size'?String(el.value):Number(el.value));
+    o[it[0]]=it[1]==='checkbox'?el.checked:(it[0]==='lot_size'||it[0]==='margin_usdt'?String(el.value):Number(el.value));
   }
   o.leverage=parseInt(o.leverage);o.cooldown_after_exit_sec=parseInt(o.cooldown_after_exit_sec);
   o.max_holding_time_sec=parseInt(o.max_holding_time_sec);o.min_holding_time_sec=parseInt(o.min_holding_time_sec);
@@ -862,82 +890,100 @@ for(const it of fields){document.getElementById(it[0]).addEventListener('input',
 
 document.getElementById('form').addEventListener('submit',async e=>{
   e.preventDefault();const p=collect();
-  if(p.take_profit_pct/p.stop_loss_pct<1.5){msg('盈亏比必须>=1.5',false);return}
+  if(p.take_profit_pct/p.stop_loss_pct<1.5){msg('鐩堜簭姣斿繀椤?>= 1.5',false);return}
   const r=await fetch('/api/params',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});
-  if(r.ok){const d=await r.json();populate(d.current);msg('参数已保存',true);}
-  else msg('保存失败: '+await r.text(),false);
+  if(r.ok){const d=await r.json();populate(d.current);msg('鍙傛暟宸蹭繚瀛?,true);}
+  else msg('淇濆瓨澶辫触: '+await r.text(),false);
 });
 document.getElementById('testParamsBtn').onclick=async()=>{
-  const p=Object.assign(collect(),{lot_size:'0.001',take_profit_pct:0.002,stop_loss_pct:0.001,
+  const p=Object.assign(collect(),{margin_usdt:'10',take_profit_pct:0.002,stop_loss_pct:0.001,
     cooldown_after_exit_sec:5,min_holding_time_sec:0,max_holding_time_sec:600,
     trend_enabled:true,trend_confidence:0.30,oi_delta_threshold:0.001,
     squeeze_enabled:true,squeeze_confidence:0.40,basis_zscore_threshold:1.0,
     transition_enabled:true,transition_confidence:0.30,vol_compression_ratio:0.90,max_slippage_bps:20});
   populate(p);
   const r=await fetch('/api/params',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});
-  if(r.ok){const d=await r.json();populate(d.current);msg('测试参数已保存',true);}
-  else msg('测试参数失败: '+await r.text(),false);
+  if(r.ok){const d=await r.json();populate(d.current);msg('娴嬭瘯鍙傛暟宸蹭繚瀛?,true);}
+  else msg('娴嬭瘯鍙傛暟澶辫触: '+await r.text(),false);
 };
 document.getElementById('resetBtn').onclick=async()=>{
-  if(!confirm('恢复到初始化参数？'))return;
+  if(!confirm('鎭㈠鍒板垵濮嬪寲鍙傛暟锛?))return;
   const r=await fetch('/api/params/reset',{method:'POST'});
-  if(r.ok){const d=await r.json();populate(d.current);msg('已恢复初始化值',true);}
-  else msg('恢复失败',false);
+  if(r.ok){const d=await r.json();populate(d.current);msg('宸叉仮澶嶅垵濮嬪寲鍊?,true);}
+  else msg('鎭㈠澶辫触',false);
 };
 document.getElementById('initBtn').onclick=async()=>{
-  if(!confirm('把当前参数保存为新的初始化值？'))return;
+  if(!confirm('鎶婂綋鍓嶅弬鏁颁繚瀛樹负鏂扮殑鍒濆鍖栧€硷紵'))return;
   const r=await fetch('/api/params/initialize',{method:'POST'});
-  if(r.ok)msg('当前参数已保存为初始化值',true);else msg('初始化失败',false);
+  if(r.ok)msg('褰撳墠鍙傛暟宸蹭繚瀛樹负鍒濆鍖栧€?,true);else msg('鍒濆鍖栧け璐?,false);
 };
 document.getElementById('startBtn').onclick=async()=>{
-  if(!confirm('确认启动系统服务？'))return;
-  const r=await fetch('/api/control/start',{method:'POST'});msg(r.ok?'已发送启动命令':'启动命令失败',r.ok);
+  if(!confirm('纭鍚姩绯荤粺鏈嶅姟锛?))return;
+  const r=await fetch('/api/control/start',{method:'POST'});msg(r.ok?'宸插彂閫佸惎鍔ㄥ懡浠?:'鍚姩鍛戒护澶辫触',r.ok);
 };
 document.getElementById('restartBtn').onclick=async()=>{
-  if(!confirm('确认重启系统服务？'))return;
-  const r=await fetch('/api/control/restart',{method:'POST'});msg(r.ok?'已发送重启命令':'重启命令失败',r.ok);
+  if(!confirm('纭閲嶅惎绯荤粺鏈嶅姟锛?))return;
+  const r=await fetch('/api/control/restart',{method:'POST'});msg(r.ok?'宸插彂閫侀噸鍚懡浠?:'閲嶅惎鍛戒护澶辫触',r.ok);
 };
 document.getElementById('stopBtn').onclick=async()=>{
-  if(!confirm('确认停止系统服务？'))return;
-  const r=await fetch('/api/control/stop',{method:'POST'});msg(r.ok?'已发送停止命令':'停止命令失败',r.ok);
+  if(!confirm('纭鍋滄绯荤粺鏈嶅姟锛?))return;
+  const r=await fetch('/api/control/stop',{method:'POST'});msg(r.ok?'宸插彂閫佸仠姝㈠懡浠?:'鍋滄鍛戒护澶辫触',r.ok);
 };
 
-// ── 手动交易 ──────────────────────────────────────────────────────────
 const tradeMsg=document.getElementById('tradeMsg');
 document.getElementById('manualLongBtn').onclick=async()=>{
-  if(!confirm('确认手动做多？将使用当前手数设置'))return;
+  if(!confirm('纭鎵嬪姩鍋氬锛?))return;
   const r=await fetch('/api/trade/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({direction:'long'})});
-  msg(r.ok?'做多指令已发送':'做多失败: '+await r.text(),r.ok,tradeMsg);
+  msg(r.ok?'鍋氬鎸囦护宸插彂閫?:'鍋氬澶辫触: '+await r.text(),r.ok,tradeMsg);
 };
 document.getElementById('manualShortBtn').onclick=async()=>{
-  if(!confirm('确认手动做空？将使用当前手数设置'))return;
+  if(!confirm('纭鎵嬪姩鍋氱┖锛?))return;
   const r=await fetch('/api/trade/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({direction:'short'})});
-  msg(r.ok?'做空指令已发送':'做空失败: '+await r.text(),r.ok,tradeMsg);
+  msg(r.ok?'鍋氱┖鎸囦护宸插彂閫?:'鍋氱┖澶辫触: '+await r.text(),r.ok,tradeMsg);
 };
 document.getElementById('manualCloseBtn').onclick=async()=>{
-  if(!confirm('确认手动平仓？'))return;
+  if(!confirm('纭鎵嬪姩骞充粨锛?))return;
   const r=await fetch('/api/trade/close',{method:'POST'});
-  msg(r.ok?'平仓指令已发送':'平仓失败: '+await r.text(),r.ok,tradeMsg);
+  msg(r.ok?'骞充粨鎸囦护宸插彂閫?:'骞充粨澶辫触: '+await r.text(),r.ok,tradeMsg);
 };
 
-// ── 选币器 ────────────────────────────────────────────────────────────
+let verifiedSymbol='';
 document.getElementById('validateSymbolBtn').onclick=async()=>{
   const sym=document.getElementById('symbolInput').value.trim();
-  if(!sym){document.getElementById('symbolResult').textContent='请输入币种名';return;}
-  document.getElementById('symbolResult').textContent='正在验证...';
+  const el=document.getElementById('symbolResult');
+  verifiedSymbol='';
+  document.getElementById('applySymbolBtn').disabled=true;
+  if(!sym){el.textContent='璇疯緭鍏ュ竵绉?;return;}
+  el.style.color='#8b949e';el.textContent='姝ｅ湪楠岃瘉...';
   const r=await fetch('/api/symbol/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:sym})});
   const d=await r.json();
-  const el=document.getElementById('symbolResult');
   if(d.valid){
+    verifiedSymbol=d.symbol;
+    document.getElementById('symbolConfirm').value='';
+    document.getElementById('applySymbolBtn').disabled=false;
     el.style.color='#56d364';
-    el.textContent='✓ 验证通过：'+d.symbol+'  ⚠ 需在 config.yaml 修改 symbol 后重启生效';
+    el.textContent='楠岃瘉閫氳繃锛?+d.symbol+'銆傚闇€鍒囨崲锛岃鍦ㄧ‘璁ゆ鍐嶆杈撳叆瀹屾暣浜ゆ槗瀵广€?;
   }else{
     el.style.color='#ff7b72';
-    el.textContent='✗ 不存在：'+d.symbol+' — '+d.error;
+    el.textContent='涓嶅瓨鍦細'+d.symbol+' - '+d.error;
+  }
+};
+document.getElementById('applySymbolBtn').onclick=async()=>{
+  const el=document.getElementById('symbolResult');
+  const confirmText=document.getElementById('symbolConfirm').value.trim().toUpperCase();
+  if(!verifiedSymbol){el.style.color='#ff7b72';el.textContent='璇峰厛楠岃瘉甯佺';return;}
+  if(confirmText!==verifiedSymbol){el.style.color='#ff7b72';el.textContent='闃茶瑙︾‘璁や笉鍖归厤锛岄渶瑕佽緭鍏?'+verifiedSymbol;return;}
+  const r=await fetch('/api/symbol',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:verifiedSymbol,confirm:confirmText})});
+  if(r.ok){
+    const d=await r.json();
+    el.style.color='#56d364';el.textContent='宸插垏鎹㈠埌 '+d.symbol;
+    document.getElementById('applySymbolBtn').disabled=true;
+    loadSymbol();
+  }else{
+    el.style.color='#ff7b72';el.textContent='鍒囨崲澶辫触: '+await r.text();
   }
 };
 
-// ── 密钥管理 ──────────────────────────────────────────────────────────
 let pendingVerifyData=null;
 
 function keyPayload(){
@@ -952,7 +998,7 @@ function renderModal(data,apply){
   else{
     bals.forEach(b=>{
       const bal=parseFloat(b.balance||0);
-      if(bal>0)html+=b.asset+': <span style="color:#56d364">'+parseFloat(b.balance).toFixed(4)+'</span>  可用: '+parseFloat(b.available_balance).toFixed(4)+'<br>';
+      if(bal>0)html+=b.asset+': <span style="color:#56d364">'+parseFloat(b.balance).toFixed(4)+'</span> 可用: '+parseFloat(b.available_balance).toFixed(4)+'<br>';
     });
   }
   html+='</div></div>';
@@ -1016,7 +1062,7 @@ document.getElementById('saveKeyBtn').onclick=async()=>{
   const p=keyPayload();const label=document.getElementById('keyLabel').value.trim();
   if(!label||!p.api_key||!p.api_secret){msg('请填写标签、Key 和 Secret',false);return;}
   const r=await fetch('/api/keys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label,api_key:p.api_key,api_secret:p.api_secret})});
-  if(r.ok){msg('密钥已保存: '+label,true);loadKeys();}
+  if(r.ok){msg('密钥已保存 '+label,true);loadKeys();}
   else msg('保存失败: '+await r.text(),false);
 };
 
@@ -1031,18 +1077,17 @@ async function loadKeys(){
 }
 
 async function activateKey(label){
-  if(!confirm('切换到密钥: '+label+'？'))return;
+  if(!confirm('切换到密钥 '+label+'？'))return;
   const r=await fetch('/api/keys/activate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label})});
   msg(r.ok?'已切换到: '+label:'切换失败: '+await r.text(),r.ok);
 }
 async function deleteKey(label){
-  if(!confirm('删除密钥: '+label+'？'))return;
+  if(!confirm('删除密钥 '+label+'？'))return;
   const r=await fetch('/api/keys/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label})});
-  if(r.ok){msg('已删除: '+label,true);loadKeys();}
+  if(r.ok){msg('已删除 '+label,true);loadKeys();}
   else msg('删除失败',false);
 }
 
-// ── 日志 ──────────────────────────────────────────────────────────────
 function formatLog(e){
   const f=e.fields||{};
   return[e.message,f.engine&&('引擎:'+f.engine),f.dir&&('方向:'+f.dir),
@@ -1065,8 +1110,8 @@ async function loadLogs(){
   const now='刷新于 '+new Date().toLocaleTimeString();
   try{
     const r=await fetch('/api/logs');const d=await r.json();
-    renderLogBox('tradeLogs',d.trades||[],'暂无开单/平仓记录');
-    renderLogBox('systemLogs',d.system||[],'暂无系统报错');
+    renderLogBox('tradeLogs',d.trades||[],'暂无开仓/平仓记录');
+    renderLogBox('systemLogs',d.system||[],'暂无系统日志');
     renderLogBox('rejectLogs',d.rejects||[],'暂无拒绝记录');
     document.getElementById('tradeHint').textContent=now;
     document.getElementById('systemHint').textContent=now;
@@ -1081,16 +1126,14 @@ document.getElementById('clearTradeBtn').onclick=()=>clearLogs('trade');
 document.getElementById('clearSystemBtn').onclick=()=>clearLogs('system');
 document.getElementById('clearRejectBtn').onclick=()=>clearLogs('reject');
 
-// ── 初始化 ────────────────────────────────────────────────────────────
 async function loadSymbol(){
   try{const r=await fetch('/api/symbol');const d=await r.json();
-    document.getElementById('symbolBadge').textContent='交易对: '+(d.symbol||'--');
+    document.getElementById('symbolBadge').textContent='交易对 '+(d.symbol||'--');
   }catch(e){}
 }
 (async()=>{
   try{const r=await fetch('/api/params');const d=await r.json();populate(d.current);}
   catch(e){msg('加载参数失败: '+e,false);}
-  loadLogs();loadKeys();loadSymbol();
   setInterval(loadLogs,3000);setInterval(loadSymbol,10000);
 })();
 </script>

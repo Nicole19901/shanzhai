@@ -18,9 +18,23 @@ type ReconciliationLoop struct {
 	om       *OrderManager
 	sm       *statemachine.StateMachine
 	symbol   string
+	symbolFn func() string
 	interval time.Duration
 
 	consecutiveFailures int
+}
+
+func (r *ReconciliationLoop) SetSymbolProvider(fn func() string) {
+	if fn != nil {
+		r.symbolFn = fn
+	}
+}
+
+func (r *ReconciliationLoop) currentSymbol() string {
+	if r.symbolFn != nil {
+		return r.symbolFn()
+	}
+	return r.symbol
 }
 
 func NewReconciliationLoop(
@@ -59,7 +73,8 @@ func (r *ReconciliationLoop) reconcile(ctx context.Context) {
 		log.Debug().Msg("reconciliation skipped: missing Binance API credentials")
 		return
 	}
-	risks, err := r.rest.PositionRisk(ctx, r.symbol)
+	symbol := r.currentSymbol()
+	risks, err := r.rest.PositionRisk(ctx, symbol)
 	if err != nil {
 		r.consecutiveFailures++
 		log.Error().Err(err).Int("consecutive", r.consecutiveFailures).Msg("reconciliation REST failed")
@@ -73,7 +88,7 @@ func (r *ReconciliationLoop) reconcile(ctx context.Context) {
 	local := r.pm.Snapshot()
 	var exAmt decimal.Decimal
 	for _, pos := range risks {
-		if pos.Symbol == r.symbol {
+		if pos.Symbol == symbol {
 			exAmt = pos.PositionAmt
 			break
 		}

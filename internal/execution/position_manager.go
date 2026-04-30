@@ -47,6 +47,16 @@ func NewPositionManager(symbol string) *PositionManager {
 	}
 }
 
+func (pm *PositionManager) SetSymbol(symbol string) bool {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	if !pm.position.IsFlat() {
+		return false
+	}
+	pm.position.Symbol = symbol
+	return true
+}
+
 // Snapshot 返回只读快照
 func (pm *PositionManager) Snapshot() Position {
 	pm.mu.RLock()

@@ -33,14 +33,15 @@ const (
 type TradeHandler struct {
 	mu sync.Mutex // 防止并发平仓
 
-	pm      *PositionManager
-	om      *OrderManager
-	sm      *statemachine.StateMachine
-	guard   *risk.Guardrails
-	cfg     *config.Config
-	params  *webui.LiveParams
-	events  *webui.EventLog
-	metrics *telemetry.Metrics
+	pm        *PositionManager
+	om        *OrderManager
+	sm        *statemachine.StateMachine
+	guard     *risk.Guardrails
+	cfg       *config.Config
+	params    *webui.LiveParams
+	events    *webui.EventLog
+	metrics   *telemetry.Metrics
+	markPrice func() decimal.Decimal
 
 	cooldownUntil int64 // ms，平仓后冷却
 }
@@ -56,6 +57,31 @@ func NewTradeHandler(
 	m *telemetry.Metrics,
 ) *TradeHandler {
 	return &TradeHandler{pm: pm, om: om, sm: sm, guard: guard, cfg: cfg, params: params, events: events, metrics: m}
+}
+
+func (h *TradeHandler) SetMarkPriceProvider(fn func() decimal.Decimal) {
+	if fn != nil {
+		h.markPrice = fn
+	}
+}
+
+func (h *TradeHandler) orderQty(lp webui.LiveParamsSnapshot, fallbackPrice decimal.Decimal) (decimal.Decimal, error) {
+	margin, err := decimal.NewFromString(lp.MarginUSDT)
+	if err == nil && margin.IsPositive() {
+		price := fallbackPrice
+		if h.markPrice != nil {
+			price = h.markPrice()
+		}
+		if price.IsZero() || price.IsNegative() {
+			return decimal.Zero, fmt.Errorf("mark price unavailable for margin sizing")
+		}
+		return margin.Mul(decimal.NewFromInt(int64(lp.Leverage))).Div(price).Truncate(6), nil
+	}
+	qty, err := decimal.NewFromString(lp.LotSize)
+	if err != nil || qty.IsZero() || qty.IsNegative() {
+		return decimal.Zero, fmt.Errorf("invalid order size")
+	}
+	return qty, nil
 }
 
 // TryOpen 尝试开仓（严格按照 spec 顺序检查）
@@ -91,10 +117,10 @@ func (h *TradeHandler) TryOpen(ctx context.Context, sig *engine.Signal) {
 	}
 	// Step 7: 计算入场参数
 	lp := h.params.Get()
-	qty, err := decimal.NewFromString(lp.LotSize)
-	if err != nil || qty.IsZero() || qty.IsNegative() {
-		log.Error().Str("lot_size", lp.LotSize).Msg("invalid live lot size, open rejected")
-		h.addReject("OPEN_REJECTED", "invalid live lot size", map[string]interface{}{"lot_size": lp.LotSize})
+	qty, err := h.orderQty(lp, sig.EntryPrice)
+	if err != nil || qty.IsZero() {
+		log.Error().Err(err).Str("margin_usdt", lp.MarginUSDT).Msg("invalid live order size, open rejected")
+		h.addReject("OPEN_REJECTED", "invalid live order size", map[string]interface{}{"margin_usdt": lp.MarginUSDT})
 		return
 	}
 	dir := sig.Direction
@@ -359,9 +385,9 @@ func (h *TradeHandler) ManualOpen(ctx context.Context, dir datafeed.Direction) e
 	}
 
 	lp := h.params.Get()
-	qty, err := decimal.NewFromString(lp.LotSize)
-	if err != nil || qty.IsZero() || qty.IsNegative() {
-		return fmt.Errorf("invalid lot size: %s", lp.LotSize)
+	qty, err := h.orderQty(lp, decimal.Zero)
+	if err != nil || qty.IsZero() {
+		return fmt.Errorf("invalid order size: %w", err)
 	}
 
 	fillPrice, _, err := h.om.OpenMarket(ctx, dir, qty)

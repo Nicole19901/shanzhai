@@ -21,9 +21,10 @@ type OITracker struct {
 	mu      sync.RWMutex
 	history []oiSample // 按时间升序
 
-	rest   *datafeed.RESTClient
-	symbol string
-	pollMs int64
+	rest     *datafeed.RESTClient
+	symbol   string
+	symbolFn func() string
+	pollMs   int64
 
 	// 派生指标
 	delta5s  decimal.Decimal
@@ -44,6 +45,19 @@ func NewOITracker(rest *datafeed.RESTClient, symbol string, pollMs int64) *OITra
 	}
 }
 
+func (t *OITracker) SetSymbolProvider(fn func() string) {
+	if fn != nil {
+		t.symbolFn = fn
+	}
+}
+
+func (t *OITracker) currentSymbol() string {
+	if t.symbolFn != nil {
+		return t.symbolFn()
+	}
+	return t.symbol
+}
+
 func (t *OITracker) Run(ctx context.Context) {
 	ticker := time.NewTicker(time.Duration(t.pollMs) * time.Millisecond)
 	defer ticker.Stop()
@@ -53,7 +67,7 @@ func (t *OITracker) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			oi, err := t.rest.OpenInterest(ctx, t.symbol)
+			oi, err := t.rest.OpenInterest(ctx, t.currentSymbol())
 			if err != nil {
 				consecutiveMiss++
 				t.mu.Lock()

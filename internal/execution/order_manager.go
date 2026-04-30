@@ -18,10 +18,24 @@ type OrderManager struct {
 	rest    *datafeed.RESTClient
 	cfg     *config.Config
 	metrics *telemetry.Metrics
+	symbol  func() string
 }
 
 func NewOrderManager(rest *datafeed.RESTClient, cfg *config.Config, m *telemetry.Metrics) *OrderManager {
-	return &OrderManager{rest: rest, cfg: cfg, metrics: m}
+	return &OrderManager{rest: rest, cfg: cfg, metrics: m, symbol: func() string { return cfg.Trading.Symbol }}
+}
+
+func (om *OrderManager) SetSymbolProvider(fn func() string) {
+	if fn != nil {
+		om.symbol = fn
+	}
+}
+
+func (om *OrderManager) currentSymbol() string {
+	if om.symbol == nil {
+		return om.cfg.Trading.Symbol
+	}
+	return om.symbol()
 }
 
 func (om *OrderManager) HasCredentials() bool {
@@ -40,7 +54,7 @@ func (om *OrderManager) OpenMarket(ctx context.Context, dir datafeed.Direction, 
 	}
 	clientID := fmt.Sprintf("open_%d", time.Now().UnixMilli())
 	req := datafeed.OrderRequest{
-		Symbol:           om.cfg.Trading.Symbol,
+		Symbol:           om.currentSymbol(),
 		Side:             side,
 		Type:             "MARKET",
 		Quantity:         qty,
@@ -73,7 +87,7 @@ func (om *OrderManager) PlaceStopLoss(ctx context.Context, dir datafeed.Directio
 	}
 	clientID := fmt.Sprintf("sl_%d", time.Now().UnixMilli())
 	req := datafeed.OrderRequest{
-		Symbol:           om.cfg.Trading.Symbol,
+		Symbol:           om.currentSymbol(),
 		Side:             side,
 		Type:             "STOP_MARKET",
 		Quantity:         qty,
@@ -106,7 +120,7 @@ func (om *OrderManager) PlaceTakeProfit(ctx context.Context, dir datafeed.Direct
 	}
 	clientID := fmt.Sprintf("tp_%d", time.Now().UnixMilli())
 	req := datafeed.OrderRequest{
-		Symbol:           om.cfg.Trading.Symbol,
+		Symbol:           om.currentSymbol(),
 		Side:             side,
 		Type:             "TAKE_PROFIT_MARKET",
 		Quantity:         qty,
@@ -139,7 +153,7 @@ func (om *OrderManager) CloseMarket(ctx context.Context, dir datafeed.Direction,
 	}
 	clientID := fmt.Sprintf("close_%d", time.Now().UnixMilli())
 	req := datafeed.OrderRequest{
-		Symbol:           om.cfg.Trading.Symbol,
+		Symbol:           om.currentSymbol(),
 		Side:             side,
 		Type:             "MARKET",
 		Quantity:         qty,
@@ -179,7 +193,7 @@ func (om *OrderManager) CancelOrder(ctx context.Context, orderID string) {
 		log.Warn().Str("orderID", orderID).Msg("cancel order skipped: missing Binance API credentials")
 		return
 	}
-	if err := om.rest.CancelOrder(ctx, om.cfg.Trading.Symbol, orderID); err != nil {
+	if err := om.rest.CancelOrder(ctx, om.currentSymbol(), orderID); err != nil {
 		log.Error().Err(err).Str("orderID", orderID).Msg("cancel order failed (warning only)")
 	}
 }
@@ -189,5 +203,5 @@ func (om *OrderManager) CancelAll(ctx context.Context) error {
 	if !om.HasCredentials() {
 		return fmt.Errorf("cancel all orders: missing Binance API credentials")
 	}
-	return om.rest.CancelAllOrders(ctx, om.cfg.Trading.Symbol)
+	return om.rest.CancelAllOrders(ctx, om.currentSymbol())
 }

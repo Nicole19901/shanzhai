@@ -48,6 +48,20 @@ func NewWSClient(endpoint string, streams []string, handlers map[string]StreamHa
 	}, nil
 }
 
+func (c *WSClient) SetStreams(streams []string, handlers map[string]StreamHandler) error {
+	if len(streams) > maxStreams {
+		return fmt.Errorf("stream count %d exceeds limit %d", len(streams), maxStreams)
+	}
+	c.mu.Lock()
+	c.streams = streams
+	c.handlers = handlers
+	if c.conn != nil {
+		_ = c.conn.Close()
+	}
+	c.mu.Unlock()
+	return nil
+}
+
 func (c *WSClient) Run(ctx context.Context) {
 	backoff := backoffBase
 	for {
@@ -71,7 +85,10 @@ func (c *WSClient) Run(ctx context.Context) {
 }
 
 func (c *WSClient) connect(ctx context.Context) error {
-	path := "/stream?streams=" + joinStreams(c.streams)
+	c.mu.RLock()
+	streams := append([]string(nil), c.streams...)
+	c.mu.RUnlock()
+	path := "/stream?streams=" + joinStreams(streams)
 	u, err := url.Parse(c.endpoint + path)
 	if err != nil {
 		return err

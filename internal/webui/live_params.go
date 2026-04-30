@@ -21,6 +21,7 @@ type LiveParams struct {
 
 	// ── 开仓参数 ────────────────────────────────────────
 	LotSize         decimal.Decimal // 每笔手数
+	MarginUSDT      decimal.Decimal // 每笔保证金，按 USDT 计价
 	Leverage        int             // 杠杆倍数 1-10
 	UseMakerMode    bool            // true=挂限价单(maker), false=市价(taker)
 	MakerOffsetBps  float64         // maker 模式下限价偏移(bps)，多单=bid-offset，空单=ask+offset
@@ -64,6 +65,7 @@ type LiveParamsSnapshot struct {
 	MinHoldingTimeSec    int64   `json:"min_holding_time_sec"`
 
 	LotSize         string  `json:"lot_size"` // decimal 用 string 传输
+	MarginUSDT      string  `json:"margin_usdt"`
 	Leverage        int     `json:"leverage"`
 	UseMakerMode    bool    `json:"use_maker_mode"`
 	MakerOffsetBps  float64 `json:"maker_offset_bps"`
@@ -98,6 +100,7 @@ func NewLiveParams(cfg *config.Config) *LiveParams {
 		MinHoldingTimeSec:    cfg.Exits.MinHoldingTimeSec,
 
 		LotSize:         cfg.Trading.LotSize.String(),
+		MarginUSDT:      "10",
 		Leverage:        cfg.Trading.Leverage,
 		UseMakerMode:    cfg.Execution.UseMakerMode,
 		MakerOffsetBps:  2.0, // 默认 2bps 偏移
@@ -137,6 +140,7 @@ func (lp *LiveParams) Get() LiveParamsSnapshot {
 		MinHoldingTimeSec:    lp.MinHoldingTimeSec,
 
 		LotSize:         lp.LotSize.String(),
+		MarginUSDT:      lp.MarginUSDT.String(),
 		Leverage:        lp.Leverage,
 		UseMakerMode:    lp.UseMakerMode,
 		MakerOffsetBps:  lp.MakerOffsetBps,
@@ -197,6 +201,7 @@ func (lp *LiveParams) snapshotLocked() LiveParamsSnapshot {
 		MinHoldingTimeSec:    lp.MinHoldingTimeSec,
 
 		LotSize:         lp.LotSize.String(),
+		MarginUSDT:      lp.MarginUSDT.String(),
 		Leverage:        lp.Leverage,
 		UseMakerMode:    lp.UseMakerMode,
 		MakerOffsetBps:  lp.MakerOffsetBps,
@@ -235,6 +240,11 @@ func (lp *LiveParams) apply(s LiveParamsSnapshot) {
 		lot = decimal.NewFromFloat(0.01)
 	}
 	lp.LotSize = lot
+	margin, err := decimal.NewFromString(s.MarginUSDT)
+	if err != nil || margin.IsZero() || margin.IsNegative() {
+		margin = decimal.NewFromFloat(10)
+	}
+	lp.MarginUSDT = margin
 	lp.Leverage = s.Leverage
 	lp.UseMakerMode = s.UseMakerMode
 	lp.MakerOffsetBps = s.MakerOffsetBps

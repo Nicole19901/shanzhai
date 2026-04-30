@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -39,6 +41,9 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to load config")
 	}
 	log.Info().Str("symbol", cfg.Trading.Symbol).Int("leverage", cfg.Trading.Leverage).Msg("config loaded")
+	var activeSymbol atomic.Value
+	activeSymbol.Store(strings.ToUpper(cfg.Trading.Symbol))
+	currentSymbol := func() string { return activeSymbol.Load().(string) }
 
 	// ── 2. REST 客户端 ────────────────────────────────────────────
 	rest := datafeed.NewRESTClient(cfg.Binance.RESTEndpoint, cfg.Binance.APIKey, cfg.Binance.APISecret)
@@ -76,6 +81,7 @@ func main() {
 	slippageEst := risk.NewSlippageEstimator()
 
 	omgr := execution.NewOrderManager(rest, cfg, metrics)
+	omgr.SetSymbolProvider(currentSymbol)
 	tradeHandler := execution.NewTradeHandler(pm, omgr, sm, guard, cfg, liveParams, eventLog, metrics)
 
 	admin.SetManualTrader(tradeHandler)
@@ -84,6 +90,7 @@ func main() {
 		rest, pm, omgr, sm, cfg.Trading.Symbol,
 		cfg.Execution.ReconciliationIntervalSec,
 	)
+	recon.SetSymbolProvider(currentSymbol)
 
 	// 微观结构
 	tradeFlow := microstructure.NewTradeFlowTracker()
@@ -91,6 +98,7 @@ func main() {
 	orderBook := microstructure.NewOrderBook()
 	basisTracker := microstructure.NewBasisTracker()
 	oiTracker := microstructure.NewOITracker(rest, cfg.Trading.Symbol, cfg.Sampling.OIPollIntervalMs)
+	oiTracker.SetSymbolProvider(currentSymbol)
 
 	// 引擎（具体类型持有，支持运行时热更新）
 	trendEng := engine.NewTrendEngine(cfg.Engines.Trend)
@@ -101,20 +109,14 @@ func main() {
 	// ── 5. WebSocket 连接 ──────────────────────────────────────────
 	chs := datafeed.NewChannels()
 
-	ethHandlers := map[string]datafeed.StreamHandler{
-		"ethusdt@aggTrade":     datafeed.MakeAggTradeHandler(chs.ETHAggTrade),
-		"ethusdt@depth@100ms":  datafeed.MakeDepthHandler(chs.ETHDepth),
-		"ethusdt@kline_1s":     datafeed.MakeKlineHandler(chs.ETHKline1s),
-		"ethusdt@kline_1m":     datafeed.MakeKlineHandler(chs.ETHKline1m),
-		"ethusdt@markPrice@1s": datafeed.MakeMarkPriceHandler(chs.ETHMarkPrice),
-	}
+	ethHandlers := symbolHandlers(currentSymbol(), chs)
 	btcHandlers := map[string]datafeed.StreamHandler{
 		"btcusdt@aggTrade":     datafeed.MakeAggTradeHandler(chs.BTCAggTrade),
 		"btcusdt@markPrice@1s": datafeed.MakeMarkPriceHandler(chs.BTCMarkPrice),
 	}
 
 	ethWS, err := datafeed.NewWSClient(cfg.Binance.WSEndpoint,
-		[]string{"ethusdt@aggTrade", "ethusdt@depth@100ms", "ethusdt@kline_1s", "ethusdt@kline_1m", "ethusdt@markPrice@1s"},
+		symbolStreams(currentSymbol()),
 		ethHandlers)
 	if err != nil {
 		log.Fatal().Err(err).Msg("eth ws init failed")
@@ -178,6 +180,40 @@ func main() {
 	prevBTCClose1m.Store(decimal.Zero)
 	prevBTCClose5m.Store(decimal.Zero)
 	prevETHClose.Store(decimal.Zero)
+
+	tradeHandler.SetMarkPriceProvider(func() decimal.Decimal {
+		return latestETHMark.Load().(decimal.Decimal)
+	})
+	admin.SetSymbolSwitcher(func(ctx context.Context, sym string) error {
+		sym = strings.ToUpper(strings.TrimSpace(sym))
+		if sym == "" {
+			return fmt.Errorf("symbol is required")
+		}
+		if !pm.SetSymbol(sym) {
+			return fmt.Errorf("cannot switch symbol while local position is open")
+		}
+		oldSymbol := currentSymbol()
+		if rest.HasCredentials() {
+			if err := rest.CancelAllOrders(ctx, oldSymbol); err != nil {
+				return fmt.Errorf("cancel current symbol orders before switch: %w", err)
+			}
+			if err := rest.SetLeverage(ctx, sym, liveParams.Get().Leverage); err != nil {
+				return fmt.Errorf("set leverage for %s: %w", sym, err)
+			}
+			if err := rest.SetMarginType(ctx, sym, cfg.Trading.MarginType); err != nil {
+				log.Warn().Err(err).Str("symbol", sym).Msg("set margin type during symbol switch failed")
+			}
+		}
+		activeSymbol.Store(sym)
+		admin.SetSymbol(sym)
+		latestETHMark.Store(decimal.Zero)
+		latestETHIndex.Store(decimal.Zero)
+		latestFunding.Store(decimal.Zero)
+		latestPriceMom.Store(decimal.Zero)
+		prevETHClose.Store(decimal.Zero)
+		atomic.StoreInt64(&ethMsgCount, 0)
+		return ethWS.SetStreams(symbolStreams(sym), symbolHandlers(sym, chs))
+	})
 
 	// ── 7. 启动 goroutines ────────────────────────────────────────
 	var wg sync.WaitGroup
@@ -473,13 +509,16 @@ func main() {
 
 					// 滑点检查（用 liveParams 的 max_slippage_bps）
 					spreadBps, _ := orderBook.SpreadBps().Float64()
-					lotDecimal, err := decimal.NewFromString(lp.LotSize)
+					lotDecimal, err := decimal.NewFromString(lp.MarginUSDT)
+					if err == nil && lotDecimal.IsPositive() {
+						lotDecimal = lotDecimal.Mul(decimal.NewFromInt(int64(lp.Leverage))).Div(ethMark).Truncate(6)
+					}
 					if err != nil || lotDecimal.IsZero() || lotDecimal.IsNegative() {
-						log.Error().Str("lot_size", lp.LotSize).Msg("invalid live lot size, signal rejected")
+						log.Error().Str("margin_usdt", lp.MarginUSDT).Msg("invalid live margin, signal rejected")
 						eventLog.AddReject("SIGNAL_REJECTED", "invalid live lot size", map[string]interface{}{
-							"engine":   string(sig.Engine),
-							"dir":      dirLabel(sig.Direction),
-							"lot_size": lp.LotSize,
+							"engine":      string(sig.Engine),
+							"dir":         dirLabel(sig.Direction),
+							"margin_usdt": lp.MarginUSDT,
 						})
 						continue
 					}
@@ -561,6 +600,28 @@ func dirLabel(d datafeed.Direction) string {
 		return "SHORT"
 	default:
 		return "FLAT"
+	}
+}
+
+func symbolStreams(symbol string) []string {
+	base := strings.ToLower(symbol)
+	return []string{
+		base + "@aggTrade",
+		base + "@depth@100ms",
+		base + "@kline_1s",
+		base + "@kline_1m",
+		base + "@markPrice@1s",
+	}
+}
+
+func symbolHandlers(symbol string, chs *datafeed.Channels) map[string]datafeed.StreamHandler {
+	base := strings.ToLower(symbol)
+	return map[string]datafeed.StreamHandler{
+		base + "@aggTrade":     datafeed.MakeAggTradeHandler(chs.ETHAggTrade),
+		base + "@depth@100ms":  datafeed.MakeDepthHandler(chs.ETHDepth),
+		base + "@kline_1s":     datafeed.MakeKlineHandler(chs.ETHKline1s),
+		base + "@kline_1m":     datafeed.MakeKlineHandler(chs.ETHKline1m),
+		base + "@markPrice@1s": datafeed.MakeMarkPriceHandler(chs.ETHMarkPrice),
 	}
 }
 
