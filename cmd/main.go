@@ -136,6 +136,10 @@ func main() {
 		defer ticker.Stop()
 		for {
 			<-ticker.C
+			if !rest.HasCredentials() {
+				log.Debug().Msg("data stream warmup waiting for verified API credentials")
+				continue
+			}
 			eth := atomic.LoadInt64(&ethMsgCount)
 			btc := atomic.LoadInt64(&btcMsgCount)
 			if eth < 100 || btc < 100 {
