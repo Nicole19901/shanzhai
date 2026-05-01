@@ -382,6 +382,20 @@ func (s *Server) handleSymbol(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "confirm must exactly match normalized symbol "+sym, http.StatusBadRequest)
 			return
 		}
+		// 服务端再次验证交易对是否真实存在于 Binance Futures（防止前端绕过）
+		{
+			vctx, vcancel := context.WithTimeout(r.Context(), 5*time.Second)
+			defer vcancel()
+			ok, err := s.rest.ValidateSymbol(vctx, sym)
+			if err != nil || !ok {
+				errMsg := fmt.Sprintf("交易对 %s 在 Binance Futures 不存在", sym)
+				if err != nil {
+					errMsg = err.Error()
+				}
+				http.Error(w, errMsg, http.StatusBadRequest)
+				return
+			}
+		}
 		if s.switchSymbol == nil {
 			http.Error(w, "runtime symbol switcher not initialized", http.StatusServiceUnavailable)
 			return
@@ -441,6 +455,10 @@ func normalizeSymbol(input string) string {
 	}
 	if !strings.HasSuffix(sym, "USDT") && !strings.HasSuffix(sym, "BUSD") && !strings.HasSuffix(sym, "USDC") {
 		sym += "USDT"
+	}
+	// 拼接后仍过短（如 "B"+"USDT"="BUSDT"，5位但无意义），要求至少 6 个字符（最短合法：BTCUSDT）
+	if len(sym) < 6 {
+		return ""
 	}
 	return sym
 }
