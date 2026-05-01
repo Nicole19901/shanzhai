@@ -198,8 +198,15 @@ func (h *TradeHandler) TryOpen(ctx context.Context, sig *engine.Signal) {
 
 func (h *TradeHandler) computeGuardPrices(dir datafeed.Direction, entryPrice decimal.Decimal) (sl, tp decimal.Decimal) {
 	lp := h.params.Get()
-	slPct := decimal.NewFromFloat(lp.StopLossPct)
-	tpPct := decimal.NewFromFloat(lp.TakeProfitPct)
+	// 多空独立止盈止损
+	var rawTP, rawSL float64
+	if dir == datafeed.DirectionLong {
+		rawTP, rawSL = lp.LongTPPct, lp.LongSLPct
+	} else {
+		rawTP, rawSL = lp.ShortTPPct, lp.ShortSLPct
+	}
+	slPct := decimal.NewFromFloat(rawSL)
+	tpPct := decimal.NewFromFloat(rawTP)
 
 	if dir == datafeed.DirectionLong {
 		sl = entryPrice.Mul(decimal.NewFromInt(1).Sub(slPct))
@@ -221,8 +228,15 @@ func (h *TradeHandler) CheckAndExit(ctx context.Context, markPrice decimal.Decim
 	pos := h.pm.Snapshot()
 
 	lp := h.params.Get()
-	slPct := decimal.NewFromFloat(lp.StopLossPct).Neg()
-	tpPct := decimal.NewFromFloat(lp.TakeProfitPct)
+	// 使用多空独立止盈止损
+	var rawTP, rawSL float64
+	if pos.Direction == datafeed.DirectionLong {
+		rawTP, rawSL = lp.LongTPPct, lp.LongSLPct
+	} else {
+		rawTP, rawSL = lp.ShortTPPct, lp.ShortSLPct
+	}
+	slPct := decimal.NewFromFloat(rawSL).Neg()
+	tpPct := decimal.NewFromFloat(rawTP)
 
 	// Priority 1: 止损（最高优先级）
 	if pos.UnrealizedPnLPct.LessThanOrEqual(slPct) {

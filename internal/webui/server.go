@@ -609,14 +609,20 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request, action st
 }
 
 func validateSnapshot(s LiveParamsSnapshot) error {
-	if s.StopLossPct <= 0 || s.StopLossPct > 0.02 {
-		return fmt.Errorf("stop_loss_pct must be in (0, 0.02]")
-	}
-	if s.TakeProfitPct <= 0 || s.TakeProfitPct > 0.05 {
-		return fmt.Errorf("take_profit_pct must be in (0, 0.05]")
-	}
-	if s.TakeProfitPct/s.StopLossPct < 1.5 {
-		return fmt.Errorf("take_profit/stop_loss ratio must be >= 1.5")
+	type tpsl struct{ tp, sl float64 }
+	for name, v := range map[string]tpsl{
+		"做多(long)":  {s.LongTPPct, s.LongSLPct},
+		"做空(short)": {s.ShortTPPct, s.ShortSLPct},
+	} {
+		if v.sl <= 0 || v.sl > 0.02 {
+			return fmt.Errorf("%s 止损比例须在 (0, 2%%]", name)
+		}
+		if v.tp <= 0 || v.tp > 0.05 {
+			return fmt.Errorf("%s 止盈比例须在 (0, 5%%]", name)
+		}
+		if v.tp/v.sl < 1.5 {
+			return fmt.Errorf("%s 止盈/止损比须 ≥ 1.5", name)
+		}
 	}
 	if s.CooldownAfterExitSec < 0 || s.MaxHoldingTimeSec <= 0 || s.MinHoldingTimeSec < 0 {
 		return fmt.Errorf("holding and cooldown seconds must be valid positive values")
@@ -679,7 +685,31 @@ const adminHTML = `<!DOCTYPE html>
 <style>
 *{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#101418;color:#e8edf2;padding:16px}h1{font-size:18px;margin:0;color:#f2f6fa}.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:8px;flex-wrap:wrap}.badge{font-size:12px;color:#79c0ff;border:1px solid #27547a;border-radius:999px;padding:3px 9px}.badge.symbol{background:#0d2231;color:#56d364;border-color:#238636}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}.grid4{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}.card{background:#171d23;border:1px solid #29333d;border-radius:8px;padding:12px;margin-bottom:10px}.card h2{font-size:12px;margin:0 0 8px;color:#a9b7c4;text-transform:uppercase;letter-spacing:.5px}.field{margin-bottom:8px}.field label{display:flex;justify-content:space-between;font-size:12px;color:#d6dee6;margin-bottom:3px}.field span{color:#79c0ff;font-family:Consolas,monospace;font-size:12px}input[type=text],input[type=number],input[type=password]{width:100%;background:#0d1116;border:1px solid #34414d;border-radius:5px;color:#e8edf2;padding:5px 7px;font-size:12px}input[type=range]{width:100%;accent-color:#2f81f7}.check{display:flex;align-items:center;gap:6px;font-size:12px;color:#d6dee6;margin-bottom:8px}.check input{width:auto}.actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}button{border:0;border-radius:5px;padding:6px 11px;color:#fff;font-weight:600;cursor:pointer;font-size:12px}button:disabled{opacity:.4;cursor:not-allowed}.btn-save,.btn-apply,.btn-start{background:#238636}.btn-init{background:#8957e5}.btn-reset,.btn-neutral{background:#3b434c}.btn-restart,.btn-verify{background:#0969da}.btn-stop{background:#da3633}.msg{margin-top:8px;border-radius:5px;padding:7px 10px;font-size:12px;display:none}.ok{display:block;background:#102b1a;color:#56d364;border:1px solid #238636}.err{display:block;background:#341416;color:#ff7b72;border:1px solid #8e2b31}.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:100;align-items:center;justify-content:center}.modal-bg.open{display:flex}.modal{background:#171d23;border:1px solid #29333d;border-radius:10px;padding:18px;max-width:520px;width:90%;max-height:80vh;overflow:auto}.modal h3{margin:0 0 10px;font-size:14px}.modal-actions{display:flex;gap:8px;margin-top:12px;justify-content:flex-end}.pos-badge{display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:700}.pos-long{background:#0d2b12;color:#56d364;border:1px solid #238636}.pos-short{background:#2d0c0c;color:#ff7b72;border:1px solid #8e2b31}.pos-flat{background:#1c2128;color:#8b949e;border:1px solid #3b434c}.key-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #202a33;font-size:12px}.key-label{flex:1;color:#d6dee6;font-family:Consolas,monospace}.key-masked{flex:2;color:#8b949e;font-family:Consolas,monospace}.logbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}.loglist{height:220px;overflow:auto;background:#0d1116;border:1px solid #29333d;border-radius:5px}.row{display:grid;grid-template-columns:140px 100px 1fr;gap:6px;padding:6px 8px;border-bottom:1px solid #202a33;font-size:11px}.time{color:#8b949e}.type{font-family:Consolas,monospace;color:#79c0ff}.details{color:#d6dee6;word-break:break-word}.muted{color:#8b949e;font-size:11px}
 /* 方向控制 */
-.dir-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}.dir-card{border-radius:8px;padding:12px;text-align:center;transition:border .2s}.dir-card.long-card{background:#0d1e12;border:2px solid #238636}.dir-card.short-card{background:#1e0d0d;border:2px solid #8e2b31}.dir-card.disabled{opacity:.5;filter:grayscale(.4)}.dir-title{font-size:14px;font-weight:700;margin-bottom:6px}.dir-card.long-card .dir-title{color:#56d364}.dir-card.short-card .dir-title{color:#ff7b72}.dir-status{font-size:12px;margin-bottom:10px}.dir-toggle{width:100%;padding:7px;font-size:13px;font-weight:700;border-radius:6px;border:0;cursor:pointer;color:#fff}.dir-card.long-card .dir-toggle{background:#238636}.dir-card.short-card .dir-toggle{background:#da3633}.dir-toggle.off{background:#3b434c !important}
+.dir-col{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
+.dir-card{border-radius:8px;padding:8px 10px;transition:border .2s}
+.dir-card.long-card{background:#0d1e12;border:2px solid #238636}
+.dir-card.short-card{background:#1e0d0d;border:2px solid #8e2b31}
+.dir-card.disabled{opacity:.5;filter:grayscale(.4)}
+.dir-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.dir-title{font-size:12px;font-weight:700;flex:1}
+.dir-card.long-card .dir-title{color:#56d364}
+.dir-card.short-card .dir-title{color:#ff7b72}
+.dir-status{font-size:11px;color:#8b949e;flex:2}
+.dir-toggle{padding:3px 10px;font-size:11px;font-weight:700;border-radius:4px;border:0;cursor:pointer;color:#fff;white-space:nowrap}
+.dir-card.long-card .dir-toggle{background:#238636}
+.dir-card.short-card .dir-toggle{background:#da3633}
+.dir-toggle.off{background:#3b434c !important}
+.dir-params{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.dir-params .field{margin:0}
+.dir-params label{font-size:10px}
+.dir-params span{font-size:10px}
+.tp-dim{opacity:.45}
+/* 信号平仓说明框 */
+.exit-mode-box{background:#0d1116;border:1px solid #29333d;border-radius:8px;padding:10px;margin-bottom:8px}
+.exit-mode-box .mode-row{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.exit-mode-box .mode-title{font-size:12px;font-weight:700;color:#79c0ff}
+.exit-note{font-size:11px;line-height:1.5;color:#8b949e}
+.exit-note strong{color:#e3b341}
 /* 参数说明 */
 .info-box{background:#0d1116;border:1px solid #29333d;border-radius:8px;padding:12px;margin-bottom:10px}.info-box h2{font-size:12px;margin:0 0 8px;color:#79c0ff;text-transform:uppercase;letter-spacing:.5px}.info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px}.info-item{font-size:11px;line-height:1.5;color:#8b949e}.info-item strong{display:block;color:#c9d1d9;margin-bottom:2px}
 @media(max-width:680px){body{padding:10px}.grid2,.dir-grid{grid-template-columns:1fr}.row{grid-template-columns:1fr}.top{flex-direction:column;align-items:flex-start}}
@@ -688,33 +718,47 @@ const adminHTML = `<!DOCTYPE html>
 <body>
 <div class="top"><h1>量化交易控制台</h1><div style="display:flex;gap:8px;flex-wrap:wrap"><span class="badge symbol" id="symbolBadge">交易对 ...</span><span class="badge" id="wsMsgBadge" style="background:#0d1116;color:#8b949e;border-color:#3b434c">WS: --</span><span class="badge" id="posBadge">持仓: --</span></div></div>
 
-<!-- 参数影响说明 -->
-<div class="info-box">
-<h2>参数影响机制说明</h2>
-<div class="info-grid">
-<div class="info-item"><strong>止盈止损</strong>控制每笔交易的最大盈亏比例。止盈/止损比建议 ≥1.5。持仓超过「最长持仓秒」强制平仓，低于「最短持仓秒」内不会触发信号反转平仓。平仓后冷却期内不开新仓。</div>
-<div class="info-item"><strong>交易执行</strong>保证金×杠杆=每笔名义价值。Maker模式挂限价单降低手续费但可能无法成交。保护单截止时间越短越安全但网络延迟要求越高。</div>
-<div class="info-item"><strong>引擎阈值</strong>置信度越高信号越严格，开仓频率越低。趋势引擎依赖OI变化方向；Squeeze引擎依赖基差ZScore异常；Transition引擎依赖波动率压缩后的爆发。</div>
-<div class="info-item"><strong>风控</strong>日亏损达到限制后当日停止开仓。连续亏损超限后暂停。最大滑点超出预估时信号被拒绝。方向开关可单独禁用做多或做空。</div>
+<!-- 信号平仓模式说明 + 开关 -->
+<div class="exit-mode-box">
+<div class="mode-row">
+  <span class="mode-title">平仓模式</span>
+  <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#d6dee6;cursor:pointer">
+    <input type="checkbox" id="signal_based_exit" onchange="onExitModeChange()">
+    <span>信号确认平仓</span>
+  </label>
+  <span id="exitModeLabel" style="font-size:11px;color:#8b949e;margin-left:4px"></span>
 </div>
+<div class="exit-note" id="exitModeNote"></div>
 </div>
 
-<!-- 做多/做空方向控制 -->
-<div class="dir-grid">
+<!-- 做多/做空方向控制（竖排，各含独立 TP/SL） -->
+<div class="dir-col">
 <div class="dir-card long-card" id="longCard">
-  <div class="dir-title">做多方向 (Long)</div>
-  <div class="dir-status" id="longStatus">● 已启用 — 引擎信号为多头时执行开仓</div>
-  <button class="dir-toggle" id="longToggle" onclick="toggleDir('long')">禁用做多</button>
+  <div class="dir-head">
+    <span class="dir-title">▲ 做多 (Long)</span>
+    <span class="dir-status" id="longStatus"></span>
+    <button class="dir-toggle" id="longToggle" onclick="toggleDir('long')"></button>
+  </div>
+  <div class="dir-params">
+    <div class="field"><label for="long_tp_pct">止盈% <span id="v_long_tp_pct"></span></label><input id="long_tp_pct" type="range" min="0.001" max="0.05" step="0.001"></div>
+    <div class="field"><label for="long_sl_pct">止损% <span id="v_long_sl_pct"></span></label><input id="long_sl_pct" type="range" min="0.001" max="0.02" step="0.001"></div>
+  </div>
 </div>
 <div class="dir-card short-card" id="shortCard">
-  <div class="dir-title">做空方向 (Short)</div>
-  <div class="dir-status" id="shortStatus">● 已启用 — 引擎信号为空头时执行开仓</div>
-  <button class="dir-toggle" id="shortToggle" onclick="toggleDir('short')">禁用做空</button>
+  <div class="dir-head">
+    <span class="dir-title">▼ 做空 (Short)</span>
+    <span class="dir-status" id="shortStatus"></span>
+    <button class="dir-toggle" id="shortToggle" onclick="toggleDir('short')"></button>
+  </div>
+  <div class="dir-params">
+    <div class="field"><label for="short_tp_pct">止盈% <span id="v_short_tp_pct"></span></label><input id="short_tp_pct" type="range" min="0.001" max="0.05" step="0.001"></div>
+    <div class="field"><label for="short_sl_pct">止损% <span id="v_short_sl_pct"></span></label><input id="short_sl_pct" type="range" min="0.001" max="0.02" step="0.001"></div>
+  </div>
 </div>
 </div>
 
-<!-- 参数表单（4列紧凑布局） -->
-<form id="form"><div class="grid4" id="grid"></div><div class="actions"><button class="btn-save" type="submit">保存参数</button><button class="btn-restart" type="button" id="testParamsBtn">测试参数</button><button class="btn-init" type="button" id="initBtn">初始化</button><button class="btn-reset" type="button" id="resetBtn">恢复默认</button><button class="btn-start" type="button" id="startBtn">启动服务</button><button class="btn-restart" type="button" id="restartBtn">重启服务</button><button class="btn-stop" type="button" id="stopBtn">停止服务</button></div><div id="msg" class="msg"></div></form>
+<!-- 参数表单（单列紧凑布局） -->
+<form id="form"><div id="grid" style="display:flex;flex-direction:column;gap:8px"></div><div class="actions"><button class="btn-save" type="submit">保存参数</button><button class="btn-restart" type="button" id="testParamsBtn">测试参数</button><button class="btn-init" type="button" id="initBtn">初始化</button><button class="btn-reset" type="button" id="resetBtn">恢复默认</button><button class="btn-start" type="button" id="startBtn">启动服务</button><button class="btn-restart" type="button" id="restartBtn">重启服务</button><button class="btn-stop" type="button" id="stopBtn">停止服务</button></div><div id="msg" class="msg"></div></form>
 
 <div class="grid2" style="margin-top:10px">
 <section class="card"><h2>交易对切换</h2><div style="display:flex;gap:6px;align-items:flex-end;flex-wrap:wrap"><div class="field" style="flex:1;min-width:140px;margin:0"><label for="symbolInput">输入币种，如 ETH 或 ETHUSDT</label><input id="symbolInput" type="text" placeholder="ETHUSDT" autocomplete="off" spellcheck="false"></div><button class="btn-verify" type="button" id="validateSymbolBtn">验证</button><button class="btn-apply" type="button" id="applySymbolBtn" disabled>切换</button></div><div class="field" style="margin-top:6px"><label for="symbolConfirm">防误触确认：再次输入完整交易对</label><input id="symbolConfirm" type="text" placeholder="ETHUSDT" autocomplete="off" spellcheck="false"></div><div id="symbolResult" class="muted" style="margin-top:6px"></div><div class="muted" style="margin-top:4px">有持仓时拒绝切换；切换后数据流、OI、下单均跟随新交易对。</div></section>
@@ -726,40 +770,87 @@ const adminHTML = `<!DOCTYPE html>
 
 <script>
 const groups=[
-{title:'止盈止损',items:[['take_profit_pct','range','止盈比例',0.001,0.05,0.001,v=>(v*100).toFixed(2)+'%'],['stop_loss_pct','range','止损比例',0.001,0.02,0.001,v=>(v*100).toFixed(2)+'%'],['cooldown_after_exit_sec','number','冷却秒',0,300,1,v=>v+'s'],['max_holding_time_sec','number','最长持仓秒',60,86400,60,v=>v+'s'],['min_holding_time_sec','number','最短持仓秒',0,3600,5,v=>v+'s']]},
-{title:'交易执行',items:[['margin_usdt','number','保证金 USDT',1,100000,1,v=>v+' U'],['leverage','number','杠杆',1,10,1,v=>v+'x'],['use_maker_mode','checkbox','Maker 模式',0,0,0,v=>v?'开':'关'],['maker_offset_bps','range','Maker 偏移 bps',0,20,0.1,v=>v.toFixed(1)+' bps'],['guard_deadline_ms','number','保护单截止 ms',100,180,1,v=>v+'ms'],['depth_levels','number','深度档位',1,20,1,v=>v+'档'],['signal_based_exit','checkbox','信号平仓模式',0,0,0,v=>v?'开':'关']]},
+{title:'持仓时间 & 冷却',items:[['cooldown_after_exit_sec','number','冷却秒',0,300,1,v=>v+'s'],['max_holding_time_sec','number','最长持仓秒',60,86400,60,v=>v+'s'],['min_holding_time_sec','number','最短持仓秒',0,3600,5,v=>v+'s']]},
+{title:'交易执行',items:[['margin_usdt','number','保证金 USDT',1,100000,1,v=>v+' U'],['leverage','number','杠杆',1,10,1,v=>v+'x'],['use_maker_mode','checkbox','Maker 模式',0,0,0,v=>v?'开':'关'],['maker_offset_bps','range','Maker 偏移 bps',0,20,0.1,v=>v.toFixed(1)+' bps'],['guard_deadline_ms','number','保护单截止 ms',100,180,1,v=>v+'ms'],['depth_levels','number','深度档位',1,20,1,v=>v+'档']]},
 {title:'引擎阈值',items:[['trend_enabled','checkbox','趋势引擎',0,0,0,v=>v?'开':'关'],['trend_confidence','range','趋势置信度',0.3,0.95,0.01,v=>v.toFixed(2)],['oi_delta_threshold','range','OI Delta',0.001,0.02,0.001,v=>(v*100).toFixed(2)+'%'],['squeeze_enabled','checkbox','Squeeze 引擎',0,0,0,v=>v?'开':'关'],['squeeze_confidence','range','Squeeze 置信度',0.3,0.95,0.01,v=>v.toFixed(2)],['basis_zscore_threshold','range','Basis ZScore',1,5,0.1,v=>v.toFixed(1)],['transition_enabled','checkbox','Transition 引擎',0,0,0,v=>v?'开':'关'],['transition_confidence','range','Transition 置信度',0.3,0.95,0.01,v=>v.toFixed(2)],['vol_compression_ratio','range','波动压缩比',0.1,0.9,0.05,v=>v.toFixed(2)]]},
 {title:'风控',items:[['max_slippage_bps','range','最大滑点 bps',1,100,0.5,v=>v.toFixed(1)+' bps'],['daily_loss_limit_pct','range','日亏损限制',0.001,0.2,0.001,v=>(v*100).toFixed(2)+'%'],['consecutive_loss_limit','number','连续亏损限制',1,20,1,v=>v+'次']]}
 ];
-// long_enabled / short_enabled 由方向控制卡管理，不在 fields 列表里
 let dirState={long_enabled:true,short_enabled:true};
+const dirTPSL={long_tp:0.008,long_sl:0.004,short_tp:0.008,short_sl:0.004};
 const fields=[];const grid=document.getElementById('grid');
-for(const g of groups){const card=document.createElement('div');card.className='card';const h=document.createElement('h2');h.textContent=g.title;card.appendChild(h);for(const it of g.items){fields.push(it);const[id,type,label,min,max,step]=it;const wrap=document.createElement('div');if(type==='checkbox'){wrap.className='check';wrap.innerHTML='<input id="'+id+'" type="checkbox"><label for="'+id+'">'+label+' <span id="v_'+id+'"></span></label>';}else{wrap.className='field';wrap.innerHTML='<label for="'+id+'">'+label+' <span id="v_'+id+'"></span></label><input id="'+id+'" type="'+type+'" min="'+min+'" max="'+max+'" step="'+step+'">';}card.appendChild(wrap);}grid.appendChild(card);}
+for(const g of groups){const card=document.createElement('div');card.className='card';card.style='padding:8px 10px';const h=document.createElement('h2');h.textContent=g.title;card.appendChild(h);const inner=document.createElement('div');inner.style='display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:4px';for(const it of g.items){fields.push(it);const[id,type,label,min,max,step]=it;const wrap=document.createElement('div');if(type==='checkbox'){wrap.className='check';wrap.innerHTML='<input id="'+id+'" type="checkbox"><label for="'+id+'">'+label+' <span id="v_'+id+'"></span></label>';}else{wrap.className='field';wrap.style='margin-bottom:4px';wrap.innerHTML='<label for="'+id+'" style="font-size:11px">'+label+' <span id="v_'+id+'"></span></label><input id="'+id+'" type="'+type+'" min="'+min+'" max="'+max+'" step="'+step+'">';}inner.appendChild(wrap);}card.appendChild(inner);grid.appendChild(card);}
+// 方向卡 TP/SL 滑块事件
+['long_tp_pct','long_sl_pct','short_tp_pct','short_sl_pct'].forEach(id=>{const el=document.getElementById(id);el.addEventListener('input',()=>{const pct=(parseFloat(el.value)*100).toFixed(2)+'%';document.getElementById('v_'+id).textContent=pct;const k=id.replace('_pct','').replace('_','_');dirTPSL[id.replace('_pct','')]=parseFloat(el.value);});});
 function fmt(it,val){return it[6](it[1]==='checkbox'?!!val:parseFloat(val))}
 function refreshLabel(it){const el=document.getElementById(it[0]);document.getElementById('v_'+it[0]).textContent=fmt(it,it[1]==='checkbox'?el.checked:el.value)}
-function populate(cur){for(const it of fields){const el=document.getElementById(it[0]);if(cur[it[0]]===undefined)continue;if(it[1]==='checkbox')el.checked=!!cur[it[0]];else el.value=cur[it[0]];refreshLabel(it)}if(cur.long_enabled!==undefined)dirState.long_enabled=!!cur.long_enabled;if(cur.short_enabled!==undefined)dirState.short_enabled=!!cur.short_enabled;renderDirCards()}
-function collect(){const o={};for(const it of fields){const el=document.getElementById(it[0]);o[it[0]]=it[1]==='checkbox'?el.checked:(it[0]==='margin_usdt'?String(el.value):Number(el.value));}o.leverage=parseInt(o.leverage);o.cooldown_after_exit_sec=parseInt(o.cooldown_after_exit_sec);o.max_holding_time_sec=parseInt(o.max_holding_time_sec);o.min_holding_time_sec=parseInt(o.min_holding_time_sec);o.guard_deadline_ms=parseInt(o.guard_deadline_ms);o.consecutive_loss_limit=parseInt(o.consecutive_loss_limit);o.depth_levels=parseInt(o.depth_levels);o.long_enabled=dirState.long_enabled;o.short_enabled=dirState.short_enabled;return o}
+function setDirSlider(id,val){const el=document.getElementById(id);if(el){el.value=val;document.getElementById('v_'+id).textContent=(val*100).toFixed(2)+'%';}}
+function populate(cur){
+  for(const it of fields){const el=document.getElementById(it[0]);if(cur[it[0]]===undefined)continue;if(it[1]==='checkbox')el.checked=!!cur[it[0]];else el.value=cur[it[0]];refreshLabel(it)}
+  if(cur.long_tp_pct!==undefined){setDirSlider('long_tp_pct',cur.long_tp_pct);dirTPSL.long_tp=cur.long_tp_pct;}
+  if(cur.long_sl_pct!==undefined){setDirSlider('long_sl_pct',cur.long_sl_pct);dirTPSL.long_sl=cur.long_sl_pct;}
+  if(cur.short_tp_pct!==undefined){setDirSlider('short_tp_pct',cur.short_tp_pct);dirTPSL.short_tp=cur.short_tp_pct;}
+  if(cur.short_sl_pct!==undefined){setDirSlider('short_sl_pct',cur.short_sl_pct);dirTPSL.short_sl=cur.short_sl_pct;}
+  if(cur.long_enabled!==undefined)dirState.long_enabled=!!cur.long_enabled;
+  if(cur.short_enabled!==undefined)dirState.short_enabled=!!cur.short_enabled;
+  if(cur.signal_based_exit!==undefined){document.getElementById('signal_based_exit').checked=!!cur.signal_based_exit;}
+  renderDirCards();onExitModeChange();
+}
+function collect(){
+  const o={};
+  for(const it of fields){const el=document.getElementById(it[0]);o[it[0]]=it[1]==='checkbox'?el.checked:(it[0]==='margin_usdt'?String(el.value):Number(el.value));}
+  o.leverage=parseInt(o.leverage);o.cooldown_after_exit_sec=parseInt(o.cooldown_after_exit_sec);o.max_holding_time_sec=parseInt(o.max_holding_time_sec);o.min_holding_time_sec=parseInt(o.min_holding_time_sec);o.guard_deadline_ms=parseInt(o.guard_deadline_ms);o.consecutive_loss_limit=parseInt(o.consecutive_loss_limit);o.depth_levels=parseInt(o.depth_levels);
+  o.long_enabled=dirState.long_enabled;o.short_enabled=dirState.short_enabled;
+  o.signal_based_exit=document.getElementById('signal_based_exit').checked;
+  o.long_tp_pct=parseFloat(document.getElementById('long_tp_pct').value);
+  o.long_sl_pct=parseFloat(document.getElementById('long_sl_pct').value);
+  o.short_tp_pct=parseFloat(document.getElementById('short_tp_pct').value);
+  o.short_sl_pct=parseFloat(document.getElementById('short_sl_pct').value);
+  return o;
+}
 function msg(t,ok,el){const m=el||document.getElementById('msg');m.textContent=t;m.className='msg '+(ok?'ok':'err');setTimeout(()=>{m.className='msg'},5000)}
 for(const it of fields){document.getElementById(it[0]).addEventListener('input',()=>refreshLabel(it))}
+function onExitModeChange(){
+  const on=document.getElementById('signal_based_exit').checked;
+  const lbl=document.getElementById('exitModeLabel');
+  const note=document.getElementById('exitModeNote');
+  if(on){
+    lbl.textContent='已开启';lbl.style.color='#e3b341';
+    note.innerHTML='<strong>信号确认平仓模式（开启）：</strong>到达止盈比例时<strong>不</strong>立即平仓，等待反向信号多窗口确认后才平仓，适合趋势延续行情。<br>'
+      +'✅ <strong>有效参数：</strong>止损%（本地监控+交易所保护单）、止盈%（仅用于交易所挂单价格，本地不触发）、最短/最长持仓秒、冷却秒。<br>'
+      +'⚠️ <strong>注意：</strong>止盈%只定义保护单挂单价位，<u>本地止盈监控已关闭</u>。持仓将持续到反向信号出现或超时/止损触发。';
+    // 半透明止盈滑块提示
+    document.querySelectorAll('.dir-params .field:first-child').forEach(el=>el.classList.add('tp-dim'));
+  } else {
+    lbl.textContent='已关闭（固定止盈）';lbl.style.color='#8b949e';
+    note.innerHTML='<strong>固定止盈模式（关闭）：</strong>价格达到止盈%时立即市价平仓，不等信号确认，适合快进快出波动行情。<br>'
+      +'✅ <strong>有效参数：</strong>止盈%（本地监控+保护单）、止损%、最短/最长持仓秒、冷却秒。';
+    document.querySelectorAll('.dir-params .field:first-child').forEach(el=>el.classList.remove('tp-dim'));
+  }
+}
 function renderDirCards(){
   const lc=document.getElementById('longCard'),sc=document.getElementById('shortCard');
   const ls=document.getElementById('longStatus'),ss=document.getElementById('shortStatus');
   const lt=document.getElementById('longToggle'),st=document.getElementById('shortToggle');
-  if(dirState.long_enabled){lc.classList.remove('disabled');ls.textContent='● 已启用 — 引擎多头信号将执行开仓';ls.style.color='#56d364';lt.textContent='禁用做多';lt.classList.remove('off')}
-  else{lc.classList.add('disabled');ls.textContent='○ 已禁用 — 多头信号将被过滤';ls.style.color='#8b949e';lt.textContent='启用做多';lt.classList.add('off')}
-  if(dirState.short_enabled){sc.classList.remove('disabled');ss.textContent='● 已启用 — 引擎空头信号将执行开仓';ss.style.color='#ff7b72';st.textContent='禁用做空';st.classList.remove('off')}
-  else{sc.classList.add('disabled');ss.textContent='○ 已禁用 — 空头信号将被过滤';ss.style.color='#8b949e';st.textContent='启用做空';st.classList.add('off')}
+  if(dirState.long_enabled){lc.classList.remove('disabled');ls.textContent='● 已启用';ls.style.color='#56d364';lt.textContent='禁用';lt.classList.remove('off')}
+  else{lc.classList.add('disabled');ls.textContent='○ 禁用';ls.style.color='#8b949e';lt.textContent='启用';lt.classList.add('off')}
+  if(dirState.short_enabled){sc.classList.remove('disabled');ss.textContent='● 已启用';ss.style.color='#ff7b72';st.textContent='禁用';st.classList.remove('off')}
+  else{sc.classList.add('disabled');ss.textContent='○ 禁用';ss.style.color='#8b949e';st.textContent='启用';st.classList.add('off')}
 }
 async function toggleDir(dir){
-  dirState[dir+'_enabled']=!dirState[dir+'_enabled'];
-  renderDirCards();
-  const p=collect();
-  const r=await fetch('/api/params',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});
+  dirState[dir+'_enabled']=!dirState[dir+'_enabled'];renderDirCards();
+  const r=await fetch('/api/params',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collect())});
   if(r.ok){msg((dir==='long'?'做多':'做空')+'方向已'+(dirState[dir+'_enabled']?'启用':'禁用'),true)}
   else{dirState[dir+'_enabled']=!dirState[dir+'_enabled'];renderDirCards();msg('保存失败: '+await r.text(),false)}
 }
-document.getElementById('form').addEventListener('submit',async e=>{e.preventDefault();const p=collect();if(p.take_profit_pct/p.stop_loss_pct<1.5){msg('止盈止损比必须 ≥ 1.5',false);return}const r=await fetch('/api/params',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok){const d=await r.json();populate(d.current);msg('参数已保存',true)}else msg('保存失败: '+await r.text(),false)});
-document.getElementById('testParamsBtn').onclick=async()=>{const p=Object.assign(collect(),{margin_usdt:'10',take_profit_pct:0.002,stop_loss_pct:0.001,cooldown_after_exit_sec:5,min_holding_time_sec:0,max_holding_time_sec:600,trend_enabled:true,trend_confidence:0.30,oi_delta_threshold:0.001,squeeze_enabled:true,squeeze_confidence:0.40,basis_zscore_threshold:1.0,transition_enabled:true,transition_confidence:0.30,vol_compression_ratio:0.90,max_slippage_bps:20});populate(p);const r=await fetch('/api/params',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok){const d=await r.json();populate(d.current);msg('测试参数已保存',true)}else msg('设置测试参数失败: '+await r.text(),false)};
+document.getElementById('form').addEventListener('submit',async e=>{
+  e.preventDefault();const p=collect();
+  const errs=[];
+  if(p.long_tp_pct/p.long_sl_pct<1.5)errs.push('做多 TP/SL<1.5');
+  if(p.short_tp_pct/p.short_sl_pct<1.5)errs.push('做空 TP/SL<1.5');
+  if(errs.length){msg(errs.join('，'),false);return}
+  const r=await fetch('/api/params',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});
+  if(r.ok){const d=await r.json();populate(d.current);msg('参数已保存',true)}else msg('保存失败: '+await r.text(),false)});
+document.getElementById('testParamsBtn').onclick=async()=>{const p=Object.assign(collect(),{long_tp_pct:0.002,long_sl_pct:0.001,short_tp_pct:0.002,short_sl_pct:0.001,margin_usdt:'10',cooldown_after_exit_sec:5,min_holding_time_sec:0,max_holding_time_sec:600,trend_enabled:true,trend_confidence:0.30,oi_delta_threshold:0.001,squeeze_enabled:true,squeeze_confidence:0.40,basis_zscore_threshold:1.0,transition_enabled:true,transition_confidence:0.30,vol_compression_ratio:0.90,max_slippage_bps:20});populate(p);const r=await fetch('/api/params',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok){const d=await r.json();populate(d.current);msg('测试参数已保存',true)}else msg('设置测试参数失败: '+await r.text(),false)};
 document.getElementById('resetBtn').onclick=async()=>{if(!confirm('恢复到初始化参数？'))return;const r=await fetch('/api/params/reset',{method:'POST'});if(r.ok){const d=await r.json();populate(d.current);msg('已恢复默认参数',true)}else msg('恢复失败',false)};
 document.getElementById('initBtn').onclick=async()=>{if(!confirm('把当前参数保存为新的默认值？'))return;const r=await fetch('/api/params/initialize',{method:'POST'});msg(r.ok?'当前参数已设为默认值':'保存失败',r.ok)};
 document.getElementById('startBtn').onclick=async()=>{if(!confirm('确认启动系统服务？'))return;const r=await fetch('/api/control/start',{method:'POST'});msg(r.ok?'启动命令已发送':'启动失败: '+await r.text(),r.ok)};

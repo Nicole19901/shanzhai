@@ -12,7 +12,12 @@ import (
 type LiveParams struct {
 	mu sync.RWMutex
 
-	// ── 止盈止损 ────────────────────────────────────────
+	// ── 止盈止损（多空独立）────────────────────────────────
+	LongTPPct  float64 // 做多止盈比例
+	LongSLPct  float64 // 做多止损比例
+	ShortTPPct float64 // 做空止盈比例
+	ShortSLPct float64 // 做空止损比例
+	// 保留兼容字段（从 config 初始化后分配给多空）
 	TakeProfitPct        float64
 	StopLossPct          float64
 	CooldownAfterExitSec int64
@@ -61,8 +66,14 @@ type LiveParams struct {
 
 // LiveParamsSnapshot JSON 序列化快照
 type LiveParamsSnapshot struct {
-	TakeProfitPct        float64 `json:"take_profit_pct"`
-	StopLossPct          float64 `json:"stop_loss_pct"`
+	// 多空独立止盈止损
+	LongTPPct  float64 `json:"long_tp_pct"`
+	LongSLPct  float64 `json:"long_sl_pct"`
+	ShortTPPct float64 `json:"short_tp_pct"`
+	ShortSLPct float64 `json:"short_sl_pct"`
+	// 兼容旧字段（NewLiveParams 从 config 初始化时使用，后续 UI 不再直接使用）
+	TakeProfitPct        float64 `json:"take_profit_pct,omitempty"`
+	StopLossPct          float64 `json:"stop_loss_pct,omitempty"`
 	CooldownAfterExitSec int64   `json:"cooldown_after_exit_sec"`
 	MaxHoldingTimeSec    int64   `json:"max_holding_time_sec"`
 	MinHoldingTimeSec    int64   `json:"min_holding_time_sec"`
@@ -97,8 +108,10 @@ type LiveParamsSnapshot struct {
 
 func NewLiveParams(cfg *config.Config) *LiveParams {
 	snap := LiveParamsSnapshot{
-		TakeProfitPct:        cfg.Exits.TakeProfitPct,
-		StopLossPct:          cfg.Exits.StopLossPct,
+		LongTPPct:  cfg.Exits.TakeProfitPct,
+		LongSLPct:  cfg.Exits.StopLossPct,
+		ShortTPPct: cfg.Exits.TakeProfitPct,
+		ShortSLPct: cfg.Exits.StopLossPct,
 		CooldownAfterExitSec: cfg.Exits.CooldownAfterExitSec,
 		MaxHoldingTimeSec:    cfg.Exits.MaxHoldingTimeSec,
 		MinHoldingTimeSec:    cfg.Exits.MinHoldingTimeSec,
@@ -137,40 +150,7 @@ func NewLiveParams(cfg *config.Config) *LiveParams {
 func (lp *LiveParams) Get() LiveParamsSnapshot {
 	lp.mu.RLock()
 	defer lp.mu.RUnlock()
-	return LiveParamsSnapshot{
-		TakeProfitPct:        lp.TakeProfitPct,
-		StopLossPct:          lp.StopLossPct,
-		CooldownAfterExitSec: lp.CooldownAfterExitSec,
-		MaxHoldingTimeSec:    lp.MaxHoldingTimeSec,
-		MinHoldingTimeSec:    lp.MinHoldingTimeSec,
-
-		LotSize:         lp.LotSize.String(),
-		MarginUSDT:      lp.MarginUSDT.String(),
-		Leverage:        lp.Leverage,
-		UseMakerMode:    lp.UseMakerMode,
-		MakerOffsetBps:  lp.MakerOffsetBps,
-		GuardDeadlineMs: lp.GuardDeadlineMs,
-
-		TrendEnabled:     lp.TrendEnabled,
-		TrendConfidence:  lp.TrendConfidence,
-		OIDeltaThreshold: lp.OIDeltaThreshold,
-
-		SqueezeEnabled:       lp.SqueezeEnabled,
-		SqueezeConfidence:    lp.SqueezeConfidence,
-		BasisZScoreThreshold: lp.BasisZScoreThreshold,
-
-		TransitionEnabled:    lp.TransitionEnabled,
-		TransitionConfidence: lp.TransitionConfidence,
-		VolCompressionRatio:  lp.VolCompressionRatio,
-
-		MaxSlippageBps:       lp.MaxSlippageBps,
-		DailyLossLimitPct:    lp.DailyLossLimitPct,
-		ConsecutiveLossLimit: lp.ConsecutiveLossLimit,
-		DepthLevels:          lp.DepthLevels,
-		SignalBasedExit:      lp.SignalBasedExit,
-		LongEnabled:          lp.LongEnabled,
-		ShortEnabled:         lp.ShortEnabled,
-	}
+	return lp.snapshotLocked()
 }
 
 func (lp *LiveParams) Update(s LiveParamsSnapshot) {
@@ -200,8 +180,11 @@ func (lp *LiveParams) Defaults() LiveParamsSnapshot {
 
 func (lp *LiveParams) snapshotLocked() LiveParamsSnapshot {
 	return LiveParamsSnapshot{
-		TakeProfitPct:        lp.TakeProfitPct,
-		StopLossPct:          lp.StopLossPct,
+		LongTPPct:  lp.LongTPPct,
+		LongSLPct:  lp.LongSLPct,
+		ShortTPPct: lp.ShortTPPct,
+		ShortSLPct: lp.ShortSLPct,
+
 		CooldownAfterExitSec: lp.CooldownAfterExitSec,
 		MaxHoldingTimeSec:    lp.MaxHoldingTimeSec,
 		MinHoldingTimeSec:    lp.MinHoldingTimeSec,
@@ -236,8 +219,20 @@ func (lp *LiveParams) snapshotLocked() LiveParamsSnapshot {
 }
 
 func (lp *LiveParams) apply(s LiveParamsSnapshot) {
-	lp.TakeProfitPct = s.TakeProfitPct
-	lp.StopLossPct = s.StopLossPct
+	// 多空独立 TP/SL；若字段为 0 则回退到兼容旧字段
+	setOrFallback := func(v, fallback float64) float64 {
+		if v > 0 {
+			return v
+		}
+		return fallback
+	}
+	lp.LongTPPct = setOrFallback(s.LongTPPct, s.TakeProfitPct)
+	lp.LongSLPct = setOrFallback(s.LongSLPct, s.StopLossPct)
+	lp.ShortTPPct = setOrFallback(s.ShortTPPct, s.TakeProfitPct)
+	lp.ShortSLPct = setOrFallback(s.ShortSLPct, s.StopLossPct)
+	// 兼容字段也同步（供旧代码引用）
+	lp.TakeProfitPct = lp.LongTPPct
+	lp.StopLossPct = lp.LongSLPct
 	lp.CooldownAfterExitSec = s.CooldownAfterExitSec
 	lp.MaxHoldingTimeSec = s.MaxHoldingTimeSec
 	lp.MinHoldingTimeSec = s.MinHoldingTimeSec
