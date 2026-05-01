@@ -10,8 +10,9 @@ import (
 	"github.com/yourorg/eth-perp-system/internal/datafeed"
 )
 
+// ringEntry 使用 float64 避免 decimal 的堆分配，RCVD 是方向性指标，float64 精度够用
 type ringEntry struct {
-	signedVol decimal.Decimal
+	signedVol float64
 	ts        int64
 }
 
@@ -20,7 +21,7 @@ type rcvdWindow struct {
 	head     int
 	size     int
 	capacity int
-	sum      decimal.Decimal
+	sum      float64
 	windowMs int64
 }
 
@@ -32,14 +33,14 @@ func newRcvdWindow(windowMs int64, capacity int) *rcvdWindow {
 	}
 }
 
-func (w *rcvdWindow) Add(signedVol decimal.Decimal, ts int64) {
+func (w *rcvdWindow) Add(signedVol float64, ts int64) {
 	cutoff := ts - w.windowMs
 	for w.size > 0 {
 		oldest := w.buf[(w.head-w.size+w.capacity)%w.capacity]
 		if oldest.ts >= cutoff {
 			break
 		}
-		w.sum = w.sum.Sub(oldest.signedVol)
+		w.sum -= oldest.signedVol
 		w.size--
 	}
 	idx := w.head % w.capacity
@@ -48,16 +49,17 @@ func (w *rcvdWindow) Add(signedVol decimal.Decimal, ts int64) {
 	if w.size < w.capacity {
 		w.size++
 	}
-	w.sum = w.sum.Add(signedVol)
+	w.sum += signedVol
 }
 
-func (w *rcvdWindow) Value() decimal.Decimal {
+func (w *rcvdWindow) Value() float64 {
 	return w.sum
 }
 
 // TradeFlowTracker 维护 RCVD 5s / 30s / 5m 三个滑动窗口
+// 内部使用 float64，消除 decimal 热路径分配，支持高频 aggTrade 流
 type TradeFlowTracker struct {
-	mu   sync.RWMutex
+	mu   sync.Mutex // 只需普通 Mutex，Add 是唯一写路径
 	w5s  *rcvdWindow
 	w30s *rcvdWindow
 	w5m  *rcvdWindow
@@ -65,18 +67,19 @@ type TradeFlowTracker struct {
 
 func NewTradeFlowTracker() *TradeFlowTracker {
 	return &TradeFlowTracker{
-		w5s:  newRcvdWindow(5_000, 2048),
-		w30s: newRcvdWindow(30_000, 8192),
-		w5m:  newRcvdWindow(300_000, 32768),
+		w5s:  newRcvdWindow(5_000, 4096),
+		w30s: newRcvdWindow(30_000, 16384),
+		w5m:  newRcvdWindow(300_000, 65536),
 	}
 }
 
 func (t *TradeFlowTracker) Add(trade *datafeed.AggTrade) {
-	var sv decimal.Decimal
+	qty, _ := trade.Quantity.Float64()
+	var sv float64
 	if !trade.IsBuyerMaker {
-		sv = trade.Quantity
+		sv = qty
 	} else {
-		sv = trade.Quantity.Neg()
+		sv = -qty
 	}
 	ts := trade.EventTime
 	t.mu.Lock()
@@ -93,12 +96,15 @@ type RCVDSnapshot struct {
 }
 
 func (t *TradeFlowTracker) Snapshot() RCVDSnapshot {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
+	t.mu.Lock()
+	s5 := t.w5s.Value()
+	s30 := t.w30s.Value()
+	s5m := t.w5m.Value()
+	t.mu.Unlock()
 	return RCVDSnapshot{
-		RCVD5s:  t.w5s.Value(),
-		RCVD30s: t.w30s.Value(),
-		RCVD5m:  t.w5m.Value(),
+		RCVD5s:  decimal.NewFromFloat(s5),
+		RCVD30s: decimal.NewFromFloat(s30),
+		RCVD5m:  decimal.NewFromFloat(s5m),
 	}
 }
 
