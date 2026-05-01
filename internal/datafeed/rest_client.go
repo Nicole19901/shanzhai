@@ -11,17 +11,20 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
 )
 
 type RESTClient struct {
-	mu        sync.RWMutex
-	baseURL   string
-	apiKey    string
-	apiSecret string
-	http      *http.Client
+	mu         sync.RWMutex
+	baseURL    string
+	apiKey     string
+	apiSecret  string
+	http       *http.Client
+	timeOffset int64 // 本地时钟与 Binance 服务器时钟的偏移量(ms)，不依赖服务器时钟推进
 }
 
 func NewRESTClient(baseURL, apiKey, apiSecret string) *RESTClient {
@@ -50,6 +53,35 @@ func (c *RESTClient) HasCredentials() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.apiKey != "" && c.apiSecret != ""
+}
+
+// SyncTime 用 Binance 服务器时间校准本地时钟偏移，解决签名 -1021 错误。
+// 只在 API Key 验证通过后调用一次；运行中签名始终用本地时钟+偏移，不再依赖服务器。
+func (c *RESTClient) SyncTime(ctx context.Context) error {
+	before := time.Now().UnixMilli()
+	resp, err := c.get(ctx, "/fapi/v1/time", nil)
+	if err != nil {
+		return fmt.Errorf("sync time fetch failed: %w", err)
+	}
+	after := time.Now().UnixMilli()
+	rtt := after - before
+	var result struct {
+		ServerTime int64 `json:"serverTime"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return fmt.Errorf("sync time parse failed: %w", err)
+	}
+	// 用 RTT/2 补偿网络延迟，使偏移量更准确
+	localMid := before + rtt/2
+	offset := result.ServerTime - localMid
+	atomic.StoreInt64(&c.timeOffset, offset)
+	log.Info().Int64("offset_ms", offset).Int64("rtt_ms", rtt).Msg("local clock synced with Binance server time")
+	return nil
+}
+
+// TimeOffset 返回当前时钟偏移量(ms)，供调试。
+func (c *RESTClient) TimeOffset() int64 {
+	return atomic.LoadInt64(&c.timeOffset)
 }
 
 // OpenInterest GET /fapi/v1/openInterest
@@ -331,7 +363,7 @@ func (c *RESTClient) signedQuery(params map[string]string) string {
 	for k, v := range params {
 		q.Set(k, v)
 	}
-	q.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
+	q.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli()+atomic.LoadInt64(&c.timeOffset), 10))
 	raw := q.Encode()
 	c.mu.RLock()
 	secret := c.apiSecret

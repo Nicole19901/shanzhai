@@ -50,6 +50,9 @@ func main() {
 	defer cancel()
 
 	if rest.HasCredentials() {
+		if err := rest.SyncTime(ctx); err != nil {
+			log.Warn().Err(err).Msg("boot: clock sync failed, using local time")
+		}
 		bootCheck(ctx, rest, cfg)
 	} else {
 		log.Warn().Msg("boot check skipped: missing Binance API credentials; webui and market-data mode only")
@@ -185,6 +188,10 @@ func main() {
 		sym = strings.ToUpper(strings.TrimSpace(sym))
 		if sym == "" {
 			return fmt.Errorf("symbol is required")
+		}
+		// 流程强制：必须先验证 API Key 才能设置交易对并握手
+		if !rest.HasCredentials() {
+			return fmt.Errorf("请先在 WebUI 验证并应用 API Key，再设置交易对")
 		}
 		if !pm.SetSymbol(sym) {
 			return fmt.Errorf("cannot switch symbol while local position is open")

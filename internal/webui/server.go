@@ -224,9 +224,15 @@ func (s *Server) handleCredentials(w http.ResponseWriter, r *http.Request, apply
 
 	if apply {
 		s.rest.UpdateCredentials(req.APIKey, req.APISecret)
-		log.Info().Msg("webui: runtime Binance credentials updated")
+		// 应用凭证后立即同步本地时钟偏移，避免签名 -1021 错误
+		if syncErr := s.rest.SyncTime(r.Context()); syncErr != nil {
+			log.Warn().Err(syncErr).Msg("webui: clock sync failed after key apply")
+		}
+		log.Info().Int64("clock_offset_ms", s.rest.TimeOffset()).Msg("webui: runtime Binance credentials updated")
 		if s.events != nil {
-			s.events.AddSystem("KEY_APPLIED", "runtime Binance credentials updated after balance verification", nil)
+			s.events.AddSystem("KEY_APPLIED", "API Key 验证成功，时钟已同步，请继续设置交易对", map[string]interface{}{
+				"clock_offset_ms": s.rest.TimeOffset(),
+			})
 		}
 	} else if s.events != nil {
 		s.events.AddSystem("KEY_VERIFIED", "credential balance verification passed", nil)
