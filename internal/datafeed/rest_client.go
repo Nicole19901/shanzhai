@@ -252,19 +252,31 @@ func (c *RESTClient) PlaceOrder(ctx context.Context, req OrderRequest) (*OrderRe
 	}, nil
 }
 
-// ValidateSymbol 检查币对是否在币安合约市场存在（无需签名）
+// ValidateSymbol 检查币对是否在币安合约市场存在且状态为 TRADING（无需签名）。
+// 使用 exchangeInfo 而非 ticker/price，后者对无流量合约也可能返回旧价格导致误判。
 func (c *RESTClient) ValidateSymbol(ctx context.Context, symbol string) (bool, error) {
-	resp, err := c.get(ctx, "/fapi/v1/ticker/price", map[string]string{"symbol": symbol})
+	resp, err := c.get(ctx, "/fapi/v1/exchangeInfo", nil)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("exchangeInfo fetch failed: %w", err)
 	}
 	var result struct {
-		Symbol string `json:"symbol"`
+		Symbols []struct {
+			Symbol string `json:"symbol"`
+			Status string `json:"status"`
+		} `json:"symbols"`
 	}
 	if err := json.Unmarshal(resp, &result); err != nil {
-		return false, err
+		return false, fmt.Errorf("exchangeInfo parse failed: %w", err)
 	}
-	return result.Symbol == symbol, nil
+	for _, s := range result.Symbols {
+		if s.Symbol == symbol {
+			if s.Status != "TRADING" {
+				return false, fmt.Errorf("symbol %s exists but status is %s (not TRADING)", symbol, s.Status)
+			}
+			return true, nil
+		}
+	}
+	return false, fmt.Errorf("symbol %s not found on Binance Futures (check spelling, e.g. BTCUSDT not BTCUSD)", symbol)
 }
 
 // SetLeverage POST /fapi/v1/leverage (signed)

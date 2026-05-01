@@ -99,16 +99,21 @@ func (c *WSClient) connect(ctx context.Context) error {
 		return fmt.Errorf("waiting for symbol to be configured via webui")
 	}
 
-	path := "/stream?streams=" + joinStreams(streams)
+	// Binance Futures combined stream 正确路径：/market/stream?streams=...
+	// 旧路径 /stream?streams= 已废弃，Binance 会静默不推数据
+	path := "/market/stream?streams=" + joinStreams(streams)
 	u, err := url.Parse(c.endpoint + path)
 	if err != nil {
 		return err
 	}
 
+	log.Info().Str("url", u.String()).Msg("ws dialing")
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, u.String(), nil)
 	if err != nil {
+		log.Error().Err(err).Str("url", u.String()).Msg("ws handshake failed")
 		return err
 	}
+	log.Info().Str("url", u.String()).Msg("ws connected")
 	defer conn.Close()
 
 	c.mu.Lock()
