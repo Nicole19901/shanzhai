@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -108,15 +109,14 @@ func main() {
 		return latestETHMark.Load().(decimal.Decimal)
 	})
 
-	// Mark price hook: CheckAndExit + warmup milestone ログ
+	// Mark price hook: 只做原子存储 + 预热日志，绝不阻塞 WS goroutine
 	var wsFirstMsg atomic.Bool
 	var wsWarmupDone atomic.Bool
 	watcher.SetMarkPriceHook(func(sym string, price decimal.Decimal) {
 		if sym != currentSymbol() {
 			return
 		}
-		latestETHMark.Store(price)
-		tradeHandler.CheckAndExit(ctx, price)
+		latestETHMark.Store(price) // 原子写，纳秒级，不会阻塞
 
 		cnt := watcher.GetMsgCount(sym)
 		if !wsFirstMsg.Load() {
@@ -300,6 +300,24 @@ func main() {
 	start("eth_ws", func() { ethWS.Run(ctx) })
 	start("state_machine", func() { sm.Run(ctx) })
 	start("reconciliation", func() { recon.Run(ctx) })
+
+	// exit_monitor: 独立 goroutine 轮询最新 mark price 检查平仓条件
+	// 与 WS goroutine 完全解耦，避免 REST 调用阻塞 markPrice channel
+	start("exit_monitor", func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				price := latestETHMark.Load().(decimal.Decimal)
+				if !price.IsZero() {
+					tradeHandler.CheckAndExit(ctx, price)
+				}
+			}
+		}
+	})
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
