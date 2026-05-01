@@ -877,6 +877,7 @@ const adminHTML = `<!DOCTYPE html>
 <style>
 *{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#101418;color:#e8edf2;padding:16px}h1{font-size:18px;margin:0;color:#f2f6fa}.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:8px;flex-wrap:wrap}.badge{font-size:12px;color:#79c0ff;border:1px solid #27547a;border-radius:999px;padding:3px 9px}.badge.symbol{background:#0d2231;color:#56d364;border-color:#238636}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}.grid4{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}.card{background:#171d23;border:1px solid #29333d;border-radius:8px;padding:12px;margin-bottom:10px}.card h2{font-size:12px;margin:0 0 8px;color:#a9b7c4;text-transform:uppercase;letter-spacing:.5px}.field{margin-bottom:8px}.field label{display:flex;justify-content:space-between;font-size:12px;color:#d6dee6;margin-bottom:3px}.field span{color:#79c0ff;font-family:Consolas,monospace;font-size:12px}input[type=text],input[type=number],input[type=password]{width:100%;background:#0d1116;border:1px solid #34414d;border-radius:5px;color:#e8edf2;padding:5px 7px;font-size:12px}input[type=range]{width:100%;accent-color:#2f81f7}.check{display:flex;align-items:center;gap:6px;font-size:12px;color:#d6dee6;margin-bottom:8px}.check input{width:auto}.actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}button{border:0;border-radius:5px;padding:6px 11px;color:#fff;font-weight:600;cursor:pointer;font-size:12px}button:disabled{opacity:.4;cursor:not-allowed}.btn-save,.btn-apply,.btn-start{background:#238636}.btn-init{background:#8957e5}.btn-reset,.btn-neutral{background:#3b434c}.btn-restart,.btn-verify{background:#0969da}.btn-stop{background:#da3633}.msg{margin-top:8px;border-radius:5px;padding:7px 10px;font-size:12px;display:none}.ok{display:block;background:#102b1a;color:#56d364;border:1px solid #238636}.err{display:block;background:#341416;color:#ff7b72;border:1px solid #8e2b31}.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:100;align-items:center;justify-content:center}.modal-bg.open{display:flex}.modal{background:#171d23;border:1px solid #29333d;border-radius:10px;padding:18px;max-width:520px;width:90%;max-height:80vh;overflow:auto}.modal h3{margin:0 0 10px;font-size:14px}.modal-actions{display:flex;gap:8px;margin-top:12px;justify-content:flex-end}.pos-badge{display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:700}.pos-long{background:#0d2b12;color:#56d364;border:1px solid #238636}.pos-short{background:#2d0c0c;color:#ff7b72;border:1px solid #8e2b31}.pos-flat{background:#1c2128;color:#8b949e;border:1px solid #3b434c}.key-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #202a33;font-size:12px}.key-label{flex:1;color:#d6dee6;font-family:Consolas,monospace}.key-masked{flex:2;color:#8b949e;font-family:Consolas,monospace}.logbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}.loglist{height:220px;overflow:auto;background:#0d1116;border:1px solid #29333d;border-radius:5px}.row{display:grid;grid-template-columns:140px 100px 1fr;gap:6px;padding:6px 8px;border-bottom:1px solid #202a33;font-size:11px}.time{color:#8b949e}.type{font-family:Consolas,monospace;color:#79c0ff}.details{color:#d6dee6;word-break:break-word}.muted{color:#8b949e;font-size:11px}
 /* 方向控制 */
+.dir-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
 .dir-col{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
 .dir-card{border-radius:8px;padding:8px 10px;transition:border .2s}
 .dir-card.long-card{background:#0d1e12;border:2px solid #238636}
@@ -896,6 +897,10 @@ const adminHTML = `<!DOCTYPE html>
 .dir-params label{font-size:10px}
 .dir-params span{font-size:10px}
 .tp-dim{opacity:.45}
+.dir-indicators{margin-top:8px;border-top:1px solid rgba(255,255,255,.07);padding-top:6px}
+.di-title{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px}
+.di-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px}
+.di-label{font-size:10px;color:#8b949e;min-width:52px}
 /* 市场指标面板 */
 .mkt{background:#0d1116;border:1px solid #29333d;border-radius:8px;padding:10px;margin-bottom:10px}
 .mkt-title{font-size:11px;color:#79c0ff;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;display:flex;align-items:center;gap:8px}
@@ -994,8 +999,8 @@ const adminHTML = `<!DOCTYPE html>
 <div class="exit-note" id="exitModeNote"></div>
 </div>
 
-<!-- 做多/做空方向控制（竖排，各含独立 TP/SL） -->
-<div class="dir-col">
+<!-- 做多/做空方向控制（并排，各含独立 TP/SL + 实时信号指标） -->
+<div class="dir-grid">
 <div class="dir-card long-card" id="longCard">
   <div class="dir-head">
     <span class="dir-title">▲ 做多 (Long)</span>
@@ -1005,6 +1010,13 @@ const adminHTML = `<!DOCTYPE html>
   <div class="dir-params">
     <div class="field"><label for="long_tp_pct">止盈% <span id="v_long_tp_pct"></span></label><input id="long_tp_pct" type="range" min="0.001" max="0.05" step="0.001"></div>
     <div class="field"><label for="long_sl_pct">止损% <span id="v_long_sl_pct"></span></label><input id="long_sl_pct" type="range" min="0.001" max="0.02" step="0.001"></div>
+  </div>
+  <div class="dir-indicators">
+    <div class="di-title">多头信号指标</div>
+    <div class="di-row"><span class="di-label">买压 5s</span><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" id="dl_rcvd_f"></div></div><span class="mkt-val" id="dl_rcvd_v" style="min-width:54px;text-align:right;font-size:10px">--</span></div></div>
+    <div class="di-row"><span class="di-label">OI Δ 5s</span><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" id="dl_oi_f"></div></div><span class="mkt-val" id="dl_oi_v" style="min-width:54px;text-align:right;font-size:10px">--</span></div></div>
+    <div class="di-row"><span class="di-label">Vol 1m</span><span class="mkt-val neu" id="dl_vol" style="font-size:10px">--</span></div>
+    <div class="di-row"><span class="di-label">资金费率</span><span class="mkt-val" id="dl_fund" style="font-size:10px">--</span></div>
   </div>
 </div>
 <div class="dir-card short-card" id="shortCard">
@@ -1016,6 +1028,13 @@ const adminHTML = `<!DOCTYPE html>
   <div class="dir-params">
     <div class="field"><label for="short_tp_pct">止盈% <span id="v_short_tp_pct"></span></label><input id="short_tp_pct" type="range" min="0.001" max="0.05" step="0.001"></div>
     <div class="field"><label for="short_sl_pct">止损% <span id="v_short_sl_pct"></span></label><input id="short_sl_pct" type="range" min="0.001" max="0.02" step="0.001"></div>
+  </div>
+  <div class="dir-indicators">
+    <div class="di-title">空头信号指标</div>
+    <div class="di-row"><span class="di-label">卖压 5s</span><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" id="ds_rcvd_f"></div></div><span class="mkt-val" id="ds_rcvd_v" style="min-width:54px;text-align:right;font-size:10px">--</span></div></div>
+    <div class="di-row"><span class="di-label">OI Δ 5s</span><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" id="ds_oi_f"></div></div><span class="mkt-val" id="ds_oi_v" style="min-width:54px;text-align:right;font-size:10px">--</span></div></div>
+    <div class="di-row"><span class="di-label">基差 ZScore</span><span class="mkt-val" id="ds_basisz" style="font-size:10px">--</span></div>
+    <div class="di-row"><span class="di-label">价差 bps</span><span class="mkt-val neu" id="ds_spread" style="font-size:10px">--</span></div>
   </div>
 </div>
 </div>
@@ -1245,6 +1264,19 @@ async function loadMarket(){try{
       +'<div class="eng-label">置信度 '+(e.confidence||0).toFixed(2)+' / 阈值 '+(e.threshold||0).toFixed(2)+'</div>'
       +'</div>';
   }
+  // 多空方向卡片的实时信号指标进度条
+  const oidB=Math.max(Math.abs(d.oi_baseline||1),1);
+  // 做多：买压=正RCVD，OI正增长，低资金费率有利
+  dirBar('dl_rcvd_f','dl_rcvd_v',d.rcvd_5s||0,0.05);
+  dirBar('dl_oi_f','dl_oi_v',d.oi_delta_5s||0,oidB*0.02);
+  const dlVol=document.getElementById('dl_vol');if(dlVol)dlVol.textContent=((d.vol_1m||0)*10000).toFixed(1)+' bps';
+  const dlFund=document.getElementById('dl_fund');
+  if(dlFund){const fr=d.funding_rate||0;dlFund.textContent=(fr*100).toFixed(4)+'%';dlFund.className='mkt-val '+(fr>0.0001?'neg':fr<-0.0001?'pos':'neu');}
+  // 做空：卖压=负RCVD取反，OI负增长取反，高基差ZScore利空
+  dirBar('ds_rcvd_f','ds_rcvd_v',-(d.rcvd_5s||0),0.05);
+  dirBar('ds_oi_f','ds_oi_v',-(d.oi_delta_5s||0),oidB*0.02);
+  const dsBz=document.getElementById('ds_basisz');if(dsBz){const bz=d.basis_zscore||0;dsBz.textContent=bz.toFixed(2);dsBz.className='mkt-val '+(bz>1?'neg':bz<-1?'pos':'neu');}
+  const dsSp=document.getElementById('ds_spread');if(dsSp)dsSp.textContent=((d.spread_bps||0)).toFixed(2)+' bps';
 }catch(e){}}
 // 监控列表显示（只读，用于市场面板与列表同步）
 function renderWatchlistItems(symKeys,active){
