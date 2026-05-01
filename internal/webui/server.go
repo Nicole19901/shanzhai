@@ -93,6 +93,9 @@ func (ks *keyStore) list() []keyEntry {
 	return out
 }
 
+// StatusProvider 返回运行时状态快照（WS 收包数、预热状态等）
+type StatusProvider func() map[string]interface{}
+
 type Server struct {
 	params      *LiveParams
 	events      *EventLog
@@ -103,8 +106,9 @@ type Server struct {
 	symbolMu     sync.RWMutex
 	activeSymbol string
 
-	trader       ManualTrader
-	switchSymbol func(context.Context, string) error
+	trader         ManualTrader
+	switchSymbol   func(context.Context, string) error
+	statusProvider StatusProvider
 }
 
 func NewServer(params *LiveParams, events *EventLog, rest *datafeed.RESTClient, serviceName, symbol string) *Server {
@@ -124,6 +128,8 @@ func NewServer(params *LiveParams, events *EventLog, rest *datafeed.RESTClient, 
 func (s *Server) SetManualTrader(t ManualTrader) { s.trader = t }
 
 func (s *Server) SetSymbolSwitcher(fn func(context.Context, string) error) { s.switchSymbol = fn }
+
+func (s *Server) SetStatusProvider(fn StatusProvider) { s.statusProvider = fn }
 
 func (s *Server) SetSymbol(sym string) {
 	s.symbolMu.Lock()
@@ -156,6 +162,7 @@ func (s *Server) Listen(addr string) {
 	mux.HandleFunc("/api/symbol/validate", s.auth(s.handleSymbolValidate))
 	mux.HandleFunc("/api/trade/open", s.auth(s.handleTradeOpen))
 	mux.HandleFunc("/api/trade/close", s.auth(s.handleTradeClose))
+	mux.HandleFunc("/api/status", s.auth(s.handleStatus))
 
 	log.Info().Str("addr", addr).Msg("webui server starting")
 	if s.events != nil {
@@ -435,6 +442,14 @@ func (s *Server) handleTradeOpen(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "ok", "direction": strings.ToUpper(req.Direction)})
 }
 
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if s.statusProvider != nil {
+		writeJSON(w, s.statusProvider())
+		return
+	}
+	writeJSON(w, map[string]interface{}{})
+}
+
 func (s *Server) handleTradeClose(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -665,7 +680,7 @@ const adminHTML = `<!DOCTYPE html>
 </style>
 </head>
 <body>
-<div class="top"><h1>量化交易控制台</h1><div style="display:flex;gap:8px;flex-wrap:wrap"><span class="badge symbol" id="symbolBadge">交易对 ...</span><span class="badge" id="posBadge">持仓: --</span></div></div>
+<div class="top"><h1>量化交易控制台</h1><div style="display:flex;gap:8px;flex-wrap:wrap"><span class="badge symbol" id="symbolBadge">交易对 ...</span><span class="badge" id="wsMsgBadge" style="background:#0d1116;color:#8b949e;border-color:#3b434c">WS: --</span><span class="badge" id="posBadge">持仓: --</span></div></div>
 
 <!-- 参数影响说明 -->
 <div class="info-box">
@@ -768,7 +783,8 @@ document.getElementById('clearTradeBtn').onclick=()=>clearLogs('trade');
 document.getElementById('clearSystemBtn').onclick=()=>clearLogs('system');
 document.getElementById('clearRejectBtn').onclick=()=>clearLogs('reject');
 async function loadSymbol(){try{const r=await fetch('/api/symbol');const d=await r.json();document.getElementById('symbolBadge').textContent='交易对 '+(d.symbol||'--')}catch(e){}}
-(async()=>{try{const r=await fetch('/api/params');const d=await r.json();populate(d.current)}catch(e){msg('加载参数失败',false)}loadLogs();loadKeys();loadSymbol();setInterval(loadLogs,3000);setInterval(loadSymbol,10000)})();
+async function loadStatus(){try{const r=await fetch('/api/status');if(!r.ok)return;const d=await r.json();const el=document.getElementById('wsMsgBadge');const n=d.ws_msg_count||0;const done=d.warmup_done||false;if(done){el.style.background='#0d2231';el.style.color='#56d364';el.style.borderColor='#238636';el.textContent='WS: 就绪 '+n+' 条'}else if(n>0){el.style.background='#1a1a0d';el.style.color='#e3b341';el.style.borderColor='#9e6a03';el.textContent='WS: 预热中 '+n+'/100'}else{el.style.background='#1a0d0d';el.style.color='#ff7b72';el.style.borderColor='#8e2b31';el.textContent='WS: 未收到数据'}}catch(e){}}
+(async()=>{try{const r=await fetch('/api/params');const d=await r.json();populate(d.current)}catch(e){msg('加载参数失败',false)}loadLogs();loadKeys();loadSymbol();loadStatus();setInterval(loadLogs,3000);setInterval(loadSymbol,10000);setInterval(loadStatus,2000)})();
 </script>
 </body>
 </html>`

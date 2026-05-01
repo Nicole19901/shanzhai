@@ -167,6 +167,22 @@ func main() {
 	tradeHandler.SetMarkPriceProvider(func() decimal.Decimal {
 		return latestETHMark.Load().(decimal.Decimal)
 	})
+	admin.SetStatusProvider(func() map[string]interface{} {
+		msgs := atomic.LoadInt64(&symbolMsgCount)
+		warmupComplete := false
+		select {
+		case <-warmupDone:
+			warmupComplete = true
+		default:
+		}
+		return map[string]interface{}{
+			"symbol":          currentSymbol(),
+			"ws_msg_count":    msgs,
+			"warmup_done":     warmupComplete,
+			"has_credentials": rest.HasCredentials(),
+		}
+	})
+
 	admin.SetSymbolSwitcher(func(ctx context.Context, sym string) error {
 		sym = strings.ToUpper(strings.TrimSpace(sym))
 		if sym == "" {
@@ -218,6 +234,7 @@ func main() {
 	start("reconciliation", func() { recon.Run(ctx) })
 
 	start("eth_aggtrade_handler", func() {
+		var firstMsg bool
 		for {
 			select {
 			case <-ctx.Done():
@@ -226,7 +243,14 @@ func main() {
 				if !ok {
 					return
 				}
-				atomic.AddInt64(&symbolMsgCount, 1)
+				n := atomic.AddInt64(&symbolMsgCount, 1)
+				if !firstMsg {
+					firstMsg = true
+					eventLog.AddSystem("WS_CONNECTED", fmt.Sprintf("数据流首条消息已收到（交易对 %s），WS 连接正常", currentSymbol()), nil)
+				}
+				if n == 100 {
+					eventLog.AddSystem("WS_WARMUP_OK", fmt.Sprintf("已收到 100 条消息，数据流预热完成（交易对 %s）", currentSymbol()), nil)
+				}
 				if !datafeed.ValidateLatency(t.EventTime, t.LocalTime, latencyThresholdMs(sm)) {
 					metrics.DataError("eth_aggtrade", "stale")
 					continue
