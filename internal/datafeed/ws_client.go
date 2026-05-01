@@ -88,6 +88,17 @@ func (c *WSClient) connect(ctx context.Context) error {
 	c.mu.RLock()
 	streams := append([]string(nil), c.streams...)
 	c.mu.RUnlock()
+
+	// 尚未设置交易对，等待前端验证后再握手
+	if len(streams) == 0 {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(2 * time.Second):
+		}
+		return fmt.Errorf("waiting for symbol to be configured via webui")
+	}
+
 	path := "/stream?streams=" + joinStreams(streams)
 	u, err := url.Parse(c.endpoint + path)
 	if err != nil {

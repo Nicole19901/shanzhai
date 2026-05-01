@@ -41,7 +41,7 @@ func main() {
 	}
 	log.Info().Str("symbol", cfg.Trading.Symbol).Int("leverage", cfg.Trading.Leverage).Msg("config loaded")
 	var activeSymbol atomic.Value
-	activeSymbol.Store(strings.ToUpper(cfg.Trading.Symbol))
+	activeSymbol.Store("") // 启动时不预设交易对，等前端验证后设置
 	currentSymbol := func() string { return activeSymbol.Load().(string) }
 
 	rest := datafeed.NewRESTClient(cfg.Binance.RESTEndpoint, cfg.Binance.APIKey, cfg.Binance.APISecret)
@@ -100,14 +100,12 @@ func main() {
 
 	chs := datafeed.NewChannels()
 
-	ethHandlers := symbolHandlers(currentSymbol(), chs)
-
-	ethWS, err := datafeed.NewWSClient(cfg.Binance.WSEndpoint,
-		symbolStreams(currentSymbol()),
-		ethHandlers)
+	// 不在启动时握手：streams=nil，等前端验证交易对后再连接
+	ethWS, err := datafeed.NewWSClient(cfg.Binance.WSEndpoint, nil, nil)
 	if err != nil {
 		log.Fatal().Err(err).Msg("eth ws init failed")
 	}
+	log.Info().Msg("ws client created; waiting for symbol to be set via webui before connecting")
 	var symbolMsgCount int64
 	warmupDone := make(chan struct{})
 	go func() {
@@ -193,8 +191,10 @@ func main() {
 		}
 		oldSymbol := currentSymbol()
 		if rest.HasCredentials() {
-			if err := rest.CancelAllOrders(ctx, oldSymbol); err != nil {
-				log.Warn().Err(err).Str("symbol", oldSymbol).Msg("cancel current symbol orders during symbol switch failed")
+			if oldSymbol != "" && oldSymbol != sym {
+				if err := rest.CancelAllOrders(ctx, oldSymbol); err != nil {
+					log.Warn().Err(err).Str("symbol", oldSymbol).Msg("cancel current symbol orders during symbol switch failed")
+				}
 			}
 			if err := rest.SetLeverage(ctx, sym, liveParams.Get().Leverage); err != nil {
 				log.Warn().Err(err).Str("symbol", sym).Int("leverage", liveParams.Get().Leverage).Msg("set leverage during symbol switch failed")
