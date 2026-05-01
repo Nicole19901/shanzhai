@@ -412,6 +412,14 @@ func main() {
 						continue
 					}
 
+					// 方向开关过滤
+					if sig.Direction == datafeed.DirectionLong && !lp.LongEnabled {
+						continue
+					}
+					if sig.Direction == datafeed.DirectionShort && !lp.ShortEnabled {
+						continue
+					}
+
 					metrics.SignalGenerated(string(eng.Name()), dirLabel(sig.Direction))
 
 					spreadBps, _ := orderBook.SpreadBps().Float64()

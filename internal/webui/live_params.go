@@ -51,6 +51,10 @@ type LiveParams struct {
 	// ── 平仓模式 ─────────────────────────────────────────
 	SignalBasedExit bool // true=信号窗口确认平仓，false=固定止盈
 
+	// ── 方向开关 ─────────────────────────────────────────
+	LongEnabled  bool // 允许开多（引擎信号为 LONG 时是否执行）
+	ShortEnabled bool // 允许开空（引擎信号为 SHORT 时是否执行）
+
 	// 初始默认值（只读，Init 时固定）
 	defaults LiveParamsSnapshot
 }
@@ -87,6 +91,8 @@ type LiveParamsSnapshot struct {
 	ConsecutiveLossLimit int     `json:"consecutive_loss_limit"`
 	DepthLevels          int     `json:"depth_levels"`
 	SignalBasedExit      bool    `json:"signal_based_exit"`
+	LongEnabled          bool    `json:"long_enabled"`
+	ShortEnabled         bool    `json:"short_enabled"`
 }
 
 func NewLiveParams(cfg *config.Config) *LiveParams {
@@ -120,6 +126,8 @@ func NewLiveParams(cfg *config.Config) *LiveParams {
 		DailyLossLimitPct:    cfg.Risk.DailyLossLimitPct,
 		ConsecutiveLossLimit: cfg.Risk.ConsecutiveLossLimit,
 		DepthLevels:          5,
+		LongEnabled:          true,
+		ShortEnabled:         true,
 	}
 	lp := &LiveParams{defaults: snap}
 	lp.apply(snap)
@@ -160,6 +168,8 @@ func (lp *LiveParams) Get() LiveParamsSnapshot {
 		ConsecutiveLossLimit: lp.ConsecutiveLossLimit,
 		DepthLevels:          lp.DepthLevels,
 		SignalBasedExit:      lp.SignalBasedExit,
+		LongEnabled:          lp.LongEnabled,
+		ShortEnabled:         lp.ShortEnabled,
 	}
 }
 
@@ -220,6 +230,8 @@ func (lp *LiveParams) snapshotLocked() LiveParamsSnapshot {
 		ConsecutiveLossLimit: lp.ConsecutiveLossLimit,
 		DepthLevels:          lp.DepthLevels,
 		SignalBasedExit:      lp.SignalBasedExit,
+		LongEnabled:          lp.LongEnabled,
+		ShortEnabled:         lp.ShortEnabled,
 	}
 }
 
@@ -274,4 +286,6 @@ func (lp *LiveParams) apply(s LiveParamsSnapshot) {
 	}
 	lp.DepthLevels = s.DepthLevels
 	lp.SignalBasedExit = s.SignalBasedExit
+	lp.LongEnabled = s.LongEnabled
+	lp.ShortEnabled = s.ShortEnabled
 }
