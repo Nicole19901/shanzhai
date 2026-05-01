@@ -184,6 +184,33 @@ func main() {
 		}
 	})
 
+	// 市场快照：供前端可视化，engine_evaluator 每 tick 更新
+	var latestMarket atomic.Value
+	latestMarket.Store(map[string]interface{}{"ready": false})
+
+	// 引擎信号状态：每次 Evaluate 后更新，含置信度和是否触发
+	type engSig struct {
+		Name       string  `json:"name"`
+		Dir        string  `json:"dir"`
+		Confidence float64 `json:"confidence"`
+		Fired      bool    `json:"fired"`
+		Threshold  float64 `json:"threshold"`
+		AgeMs      int64   `json:"age_ms"`
+	}
+	var latestEngSigs atomic.Value
+	latestEngSigs.Store([]engSig{})
+
+	admin.SetMarketProvider(func() map[string]interface{} {
+		m := latestMarket.Load().(map[string]interface{})
+		sigs := latestEngSigs.Load().([]engSig)
+		out := make(map[string]interface{}, len(m)+2)
+		for k, v := range m {
+			out[k] = v
+		}
+		out["engines"] = sigs
+		return out
+	})
+
 	admin.SetSymbolSwitcher(func(ctx context.Context, sym string) error {
 		sym = strings.ToUpper(strings.TrimSpace(sym))
 		if sym == "" {
@@ -423,9 +450,70 @@ func main() {
 				basisZf, _ := basis.ZScore.Float64()
 				metrics.SetBasisZScore(basisZf)
 
+				// 更新前端市场快照
+				f64 := func(d decimal.Decimal) float64 { v, _ := d.Float64(); return v }
+				latestMarket.Store(map[string]interface{}{
+					"ready":            true,
+					"snapshot_age_ms":  datafeed.NowMs() - mctx.SnapshotTime,
+					"mark_price":       mctx.ETHMarkPrice.StringFixed(2),
+					"index_price":      mctx.ETHIndexPrice.StringFixed(2),
+					"basis_bps":        f64(mctx.BasisBps),
+					"basis_velocity":   f64(mctx.BasisVelocity),
+					"basis_zscore":     f64(mctx.BasisZScore),
+					"funding_rate":     f64(mctx.FundingRate),
+					"next_funding_ms":  mctx.NextFundingMs,
+					"rcvd_5s":          f64(mctx.RCVD5s),
+					"rcvd_30s":         f64(mctx.RCVD30s),
+					"rcvd_5m":          f64(mctx.RCVD5m),
+					"oi_delta_5s":      f64(mctx.OIDelta5s),
+					"oi_delta_30s":     f64(mctx.OIDelta30s),
+					"oi_delta_5m":      f64(mctx.OIDelta5m),
+					"oi_velocity":      f64(mctx.OIVelocity),
+					"oi_accel":         f64(mctx.OIAccel),
+					"oi_baseline":      f64(mctx.OIBaseline),
+					"vol_1m":           f64(mctx.RealizedVol1m),
+					"vol_5m":           f64(mctx.RealizedVol5m),
+					"vol_baseline_1h":  f64(mctx.VolBaseline1h),
+					"price_momentum":   f64(mctx.PriceMomentum1m),
+					"survival_decay":   f64(mctx.OrderbookSurvivalDecay),
+					"spread_widening":  f64(mctx.SpreadWideningRate),
+				})
+
 				trendEng.SetConfig(lp.TrendEnabled, lp.TrendConfidence, lp.OIDeltaThreshold)
 				squeezeEng.SetConfig(lp.SqueezeEnabled, lp.SqueezeConfidence, lp.BasisZScoreThreshold)
 				transEng.SetConfig(lp.TransitionEnabled, lp.TransitionConfidence, lp.VolCompressionRatio)
+
+				// 收集本轮所有引擎信号状态（不管是否触发）
+				type engSig = struct {
+					Name       string  `json:"name"`
+					Dir        string  `json:"dir"`
+					Confidence float64 `json:"confidence"`
+					Fired      bool    `json:"fired"`
+					Threshold  float64 `json:"threshold"`
+					AgeMs      int64   `json:"age_ms"`
+				}
+				engThresholds := map[engine.EngineType]float64{
+					engine.EngineTrend:      lp.TrendConfidence,
+					engine.EngineSqueeze:    lp.SqueezeConfidence,
+					engine.EngineTransition: lp.TransitionConfidence,
+				}
+				var sigSnaps []engSig
+				for _, eng := range engines {
+					rawSig := eng.Evaluate(mctx)
+					snap := engSig{
+						Name:      string(eng.Name()),
+						Dir:       "FLAT",
+						Threshold: engThresholds[eng.Name()],
+						AgeMs:     datafeed.NowMs() - mctx.SnapshotTime,
+					}
+					if rawSig != nil {
+						snap.Dir = dirLabel(rawSig.Direction)
+						snap.Confidence = rawSig.Confidence
+						snap.Fired = !rawSig.IsExpired(datafeed.NowMs())
+					}
+					sigSnaps = append(sigSnaps, snap)
+				}
+				latestEngSigs.Store(sigSnaps)
 
 				for _, eng := range engines {
 					if eng.Name() == engine.EngineTrend && !sm.CanOpenTrend() {

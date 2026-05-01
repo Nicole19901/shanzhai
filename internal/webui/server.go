@@ -96,6 +96,9 @@ func (ks *keyStore) list() []keyEntry {
 // StatusProvider 返回运行时状态快照（WS 收包数、预热状态等）
 type StatusProvider func() map[string]interface{}
 
+// MarketProvider 返回最新市场指标快照（供前端可视化）
+type MarketProvider func() map[string]interface{}
+
 type Server struct {
 	params      *LiveParams
 	events      *EventLog
@@ -109,6 +112,7 @@ type Server struct {
 	trader         ManualTrader
 	switchSymbol   func(context.Context, string) error
 	statusProvider StatusProvider
+	marketProvider MarketProvider
 }
 
 func NewServer(params *LiveParams, events *EventLog, rest *datafeed.RESTClient, serviceName, symbol string) *Server {
@@ -130,6 +134,8 @@ func (s *Server) SetManualTrader(t ManualTrader) { s.trader = t }
 func (s *Server) SetSymbolSwitcher(fn func(context.Context, string) error) { s.switchSymbol = fn }
 
 func (s *Server) SetStatusProvider(fn StatusProvider) { s.statusProvider = fn }
+
+func (s *Server) SetMarketProvider(fn MarketProvider) { s.marketProvider = fn }
 
 func (s *Server) SetSymbol(sym string) {
 	s.symbolMu.Lock()
@@ -163,6 +169,7 @@ func (s *Server) Listen(addr string) {
 	mux.HandleFunc("/api/trade/open", s.auth(s.handleTradeOpen))
 	mux.HandleFunc("/api/trade/close", s.auth(s.handleTradeClose))
 	mux.HandleFunc("/api/status", s.auth(s.handleStatus))
+	mux.HandleFunc("/api/market", s.auth(s.handleMarket))
 
 	log.Info().Str("addr", addr).Msg("webui server starting")
 	if s.events != nil {
@@ -456,6 +463,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{})
 }
 
+func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
+	if s.marketProvider != nil {
+		writeJSON(w, s.marketProvider())
+		return
+	}
+	writeJSON(w, map[string]interface{}{"ready": false})
+}
+
 func (s *Server) handleTradeClose(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -704,6 +719,31 @@ const adminHTML = `<!DOCTYPE html>
 .dir-params label{font-size:10px}
 .dir-params span{font-size:10px}
 .tp-dim{opacity:.45}
+/* 市场指标面板 */
+.mkt{background:#0d1116;border:1px solid #29333d;border-radius:8px;padding:10px;margin-bottom:10px}
+.mkt-title{font-size:11px;color:#79c0ff;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.mkt-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px}
+.mkt-group{background:#13191f;border-radius:6px;padding:8px}
+.mkt-group-title{font-size:10px;color:#8b949e;margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px}
+.mkt-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px}
+.mkt-label{font-size:10px;color:#8b949e}
+.mkt-val{font-size:11px;font-family:Consolas,monospace;font-weight:600}
+.mkt-val.pos{color:#56d364}.mkt-val.neg{color:#ff7b72}.mkt-val.neu{color:#79c0ff}
+/* 迷你方向条 */
+.bar-wrap{display:flex;align-items:center;gap:4px;flex:1;margin-left:8px}
+.bar-track{flex:1;height:5px;background:#202a33;border-radius:3px;position:relative;overflow:hidden}
+.bar-fill{height:100%;border-radius:3px;position:absolute;transition:width .3s,left .3s}
+.bar-fill.pos{background:#238636;right:50%}.bar-fill.neg{background:#da3633;left:50%}
+/* 引擎信号卡 */
+.eng-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:0}
+.eng-card{background:#13191f;border-radius:6px;padding:7px;border:1px solid #202a33}
+.eng-name{font-size:10px;color:#8b949e;margin-bottom:4px}
+.eng-dir{font-size:12px;font-weight:700;margin-bottom:3px}
+.eng-conf-track{height:5px;background:#202a33;border-radius:3px;overflow:hidden;position:relative;margin-bottom:2px}
+.eng-conf-fill{height:100%;border-radius:3px;background:#0969da;transition:width .3s}
+.eng-conf-thresh{position:absolute;top:0;width:2px;height:100%;background:#e3b341}
+.eng-conf-fill.fired{background:#238636}.eng-conf-fill.fired-short{background:#da3633}
+.eng-label{font-size:10px;color:#8b949e}
 /* 信号平仓说明框 */
 .exit-mode-box{background:#0d1116;border:1px solid #29333d;border-radius:8px;padding:10px;margin-bottom:8px}
 .exit-mode-box .mode-row{display:flex;align-items:center;gap:10px;margin-bottom:6px}
@@ -717,6 +757,55 @@ const adminHTML = `<!DOCTYPE html>
 </head>
 <body>
 <div class="top"><h1>量化交易控制台</h1><div style="display:flex;gap:8px;flex-wrap:wrap"><span class="badge symbol" id="symbolBadge">交易对 ...</span><span class="badge" id="wsMsgBadge" style="background:#0d1116;color:#8b949e;border-color:#3b434c">WS: --</span><span class="badge" id="posBadge">持仓: --</span></div></div>
+
+<!-- 市场指标可视化面板 -->
+<div class="mkt" id="mktPanel">
+<div class="mkt-title">📊 实时市场指标 <span id="mktAge" style="color:#8b949e;font-size:10px;font-weight:400"></span><span id="mktNotReady" style="color:#8b949e;font-size:10px">引擎启动后显示</span></div>
+<div class="mkt-grid" id="mktGrid" style="display:none">
+  <!-- 价格与资金费率 -->
+  <div class="mkt-group">
+    <div class="mkt-group-title">价格 & 资金费率</div>
+    <div class="mkt-row"><span class="mkt-label">Mark 价格</span><span class="mkt-val neu" id="mv_mark">--</span></div>
+    <div class="mkt-row"><span class="mkt-label">Index 价格</span><span class="mkt-val neu" id="mv_index">--</span></div>
+    <div class="mkt-row"><span class="mkt-label">基差 bps</span><span class="mkt-val" id="mv_basis_bps">--</span></div>
+    <div class="mkt-row"><span class="mkt-label">基差 ZScore</span><span class="mkt-val" id="mv_basis_z">--</span></div>
+    <div class="mkt-row"><span class="mkt-label">资金费率</span><span class="mkt-val" id="mv_funding">--</span></div>
+    <div class="mkt-row"><span class="mkt-label">下次资金费</span><span class="mkt-val neu" id="mv_next_fund">--</span></div>
+    <div class="mkt-row"><span class="mkt-label">1m 动量</span><span class="mkt-val" id="mv_mom">--</span></div>
+  </div>
+  <!-- RCVD 成交量方向 -->
+  <div class="mkt-group">
+    <div class="mkt-group-title">RCVD 成交方向（买卖压力）</div>
+    <div class="mkt-row"><span class="mkt-label">5s</span><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" id="rb_5s"></div></div><span class="mkt-val" id="rv_5s" style="min-width:60px;text-align:right">--</span></div></div>
+    <div class="mkt-row"><span class="mkt-label">30s</span><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" id="rb_30s"></div></div><span class="mkt-val" id="rv_30s" style="min-width:60px;text-align:right">--</span></div></div>
+    <div class="mkt-row"><span class="mkt-label">5m</span><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" id="rb_5m"></div></div><span class="mkt-val" id="rv_5m" style="min-width:60px;text-align:right">--</span></div></div>
+  </div>
+  <!-- OI 持仓量变化 -->
+  <div class="mkt-group">
+    <div class="mkt-group-title">OI 持仓量变化</div>
+    <div class="mkt-row"><span class="mkt-label">Delta 5s</span><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" id="ob_5s"></div></div><span class="mkt-val" id="ov_5s" style="min-width:60px;text-align:right">--</span></div></div>
+    <div class="mkt-row"><span class="mkt-label">Delta 30s</span><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" id="ob_30s"></div></div><span class="mkt-val" id="ov_30s" style="min-width:60px;text-align:right">--</span></div></div>
+    <div class="mkt-row"><span class="mkt-label">Delta 5m</span><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" id="ob_5m"></div></div><span class="mkt-val" id="ov_5m" style="min-width:60px;text-align:right">--</span></div></div>
+    <div class="mkt-row"><span class="mkt-label">速度</span><span class="mkt-val" id="ov_vel">--</span></div>
+    <div class="mkt-row"><span class="mkt-label">加速度</span><span class="mkt-val" id="ov_acc">--</span></div>
+  </div>
+  <!-- 波动率 & 订单簿 -->
+  <div class="mkt-group">
+    <div class="mkt-group-title">波动率 & 订单簿</div>
+    <div class="mkt-row"><span class="mkt-label">RealVol 1m</span><span class="mkt-val neu" id="vv_1m">--</span></div>
+    <div class="mkt-row"><span class="mkt-label">RealVol 5m</span><span class="mkt-val neu" id="vv_5m">--</span></div>
+    <div class="mkt-row"><span class="mkt-label">Vol基准 1h</span><span class="mkt-val neu" id="vv_1h">--</span></div>
+    <div class="mkt-row"><span class="mkt-label">压缩比 5m/1h</span><span class="mkt-val" id="vv_comp">--</span></div>
+    <div class="mkt-row"><span class="mkt-label">挂单存活衰减</span><span class="mkt-val" id="vv_decay">--</span></div>
+    <div class="mkt-row"><span class="mkt-label">价差扩张率</span><span class="mkt-val" id="vv_spread">--</span></div>
+  </div>
+</div>
+<!-- 引擎信号状态 -->
+<div id="engSection" style="display:none;margin-top:8px">
+  <div class="mkt-group-title" style="margin-bottom:6px">引擎信号（置信度 / 阈值）</div>
+  <div class="eng-grid" id="engGrid"></div>
+</div>
+</div>
 
 <!-- 信号平仓模式说明 + 开关 -->
 <div class="exit-mode-box">
@@ -880,8 +969,74 @@ document.getElementById('clearTradeBtn').onclick=()=>clearLogs('trade');
 document.getElementById('clearSystemBtn').onclick=()=>clearLogs('system');
 document.getElementById('clearRejectBtn').onclick=()=>clearLogs('reject');
 async function loadSymbol(){try{const r=await fetch('/api/symbol');const d=await r.json();document.getElementById('symbolBadge').textContent='交易对 '+(d.symbol||'--')}catch(e){}}
+function dirBar(fillId,valId,raw,scale){
+  const fill=document.getElementById(fillId),val=document.getElementById(valId);if(!fill||!val)return;
+  const pct=Math.min(Math.abs(raw/scale)*50,50);
+  if(raw>=0){fill.className='bar-fill pos';fill.style.width=pct+'%';fill.style.left='50%';fill.style.right=''}
+  else{fill.className='bar-fill neg';fill.style.width=pct+'%';fill.style.right='50%';fill.style.left=''}
+  val.className='mkt-val '+(raw>0?'pos':raw<0?'neg':'neu');
+  val.textContent=(raw>0?'+':'')+raw.toFixed(4);
+}
+function colorVal(id,v,fmtFn,posThresh=0,negThresh=0){
+  const el=document.getElementById(id);if(!el)return;
+  el.textContent=fmtFn(v);
+  el.className='mkt-val '+(v>posThresh?'pos':v<negThresh?'neg':'neu');
+}
+async function loadMarket(){try{
+  const r=await fetch('/api/market');if(!r.ok)return;
+  const d=await r.json();
+  if(!d.ready){return;}
+  document.getElementById('mktNotReady').style.display='none';
+  document.getElementById('mktGrid').style.display='';
+  document.getElementById('engSection').style.display='';
+  document.getElementById('mktAge').textContent='延迟 '+(d.snapshot_age_ms||0)+'ms';
+  // 价格
+  document.getElementById('mv_mark').textContent=d.mark_price||'--';
+  document.getElementById('mv_index').textContent=d.index_price||'--';
+  colorVal('mv_basis_bps',d.basis_bps||0,v=>v.toFixed(3)+' bps');
+  colorVal('mv_basis_z',d.basis_zscore||0,v=>v.toFixed(2));
+  colorVal('mv_funding',d.funding_rate||0,v=>(v*100).toFixed(4)+'%');
+  // 下次资金费倒计时
+  const nf=d.next_funding_ms||0;if(nf>0){const rem=Math.max(0,nf-Date.now());const m=Math.floor(rem/60000);const s=Math.floor((rem%60000)/1000);document.getElementById('mv_next_fund').textContent=m+'m'+s+'s'}
+  colorVal('mv_mom',d.price_momentum||0,v=>(v*100).toFixed(3)+'%');
+  // RCVD 方向条（以 0.05 为满格）
+  dirBar('rb_5s','rv_5s',d.rcvd_5s||0,0.05);
+  dirBar('rb_30s','rv_30s',d.rcvd_30s||0,0.05);
+  dirBar('rb_5m','rv_5m',d.rcvd_5m||0,0.05);
+  // OI Delta（以 baseline 10% 为满格，或直接用绝对值）
+  const base=Math.max(Math.abs(d.oi_baseline||1),1);
+  dirBar('ob_5s','ov_5s',d.oi_delta_5s||0,base*0.02);
+  dirBar('ob_30s','ov_30s',d.oi_delta_30s||0,base*0.05);
+  dirBar('ob_5m','ov_5m',d.oi_delta_5m||0,base*0.1);
+  colorVal('ov_vel',d.oi_velocity||0,v=>v.toFixed(1));
+  colorVal('ov_acc',d.oi_accel||0,v=>v.toFixed(2));
+  // 波动率
+  const v1m=d.vol_1m||0,v5m=d.vol_5m||0,v1h=d.vol_baseline_1h||1;
+  document.getElementById('vv_1m').textContent=(v1m*10000).toFixed(2)+' bps';
+  document.getElementById('vv_5m').textContent=(v5m*10000).toFixed(2)+' bps';
+  document.getElementById('vv_1h').textContent=(v1h*10000).toFixed(2)+' bps';
+  const comp=v1h>0?v5m/v1h:0;
+  colorVal('vv_comp',comp,v=>v.toFixed(3),1.2,0.6);
+  colorVal('vv_decay',d.survival_decay||0,v=>v.toFixed(3),0.7,0);
+  colorVal('vv_spread',d.spread_widening||0,v=>v.toFixed(3),0,0);
+  // 引擎信号
+  const engs=d.engines||[];const eg=document.getElementById('engGrid');eg.innerHTML='';
+  for(const e of engs){
+    const dirColor=e.dir==='LONG'?'#56d364':e.dir==='SHORT'?'#ff7b72':'#8b949e';
+    const fillCls=e.fired?(e.dir==='LONG'?'fired':'fired-short'):'';
+    const pct=Math.min((e.confidence||0)*100,100);
+    const thresh=Math.min((e.threshold||0)*100,100);
+    eg.innerHTML+='<div class="eng-card">'
+      +'<div class="eng-name">'+e.name+'</div>'
+      +'<div class="eng-dir" style="color:'+dirColor+'">'+e.dir+(e.fired?' ▶':'')+'</div>'
+      +'<div class="eng-conf-track"><div class="eng-conf-fill '+fillCls+'" style="width:'+pct+'%"></div>'
+      +'<div class="eng-conf-thresh" style="left:'+thresh+'%"></div></div>'
+      +'<div class="eng-label">置信度 '+(e.confidence||0).toFixed(2)+' / 阈值 '+(e.threshold||0).toFixed(2)+'</div>'
+      +'</div>';
+  }
+}catch(e){}}
 async function loadStatus(){try{const r=await fetch('/api/status');if(!r.ok)return;const d=await r.json();const el=document.getElementById('wsMsgBadge');const n=d.ws_msg_count||0;const done=d.warmup_done||false;if(done){el.style.background='#0d2231';el.style.color='#56d364';el.style.borderColor='#238636';el.textContent='WS: 就绪 '+n+' 条'}else if(n>0){el.style.background='#1a1a0d';el.style.color='#e3b341';el.style.borderColor='#9e6a03';el.textContent='WS: 预热中 '+n+'/100'}else{el.style.background='#1a0d0d';el.style.color='#ff7b72';el.style.borderColor='#8e2b31';el.textContent='WS: 未收到数据'}}catch(e){}}
-(async()=>{try{const r=await fetch('/api/params');const d=await r.json();populate(d.current)}catch(e){msg('加载参数失败',false)}loadLogs();loadKeys();loadSymbol();loadStatus();setInterval(loadLogs,3000);setInterval(loadSymbol,10000);setInterval(loadStatus,2000)})();
+(async()=>{try{const r=await fetch('/api/params');const d=await r.json();populate(d.current)}catch(e){msg('加载参数失败',false)}loadLogs();loadKeys();loadSymbol();loadStatus();loadMarket();setInterval(loadLogs,3000);setInterval(loadSymbol,10000);setInterval(loadStatus,2000);setInterval(loadMarket,800)})();
 </script>
 </body>
 </html>`
