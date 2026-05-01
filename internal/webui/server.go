@@ -1006,30 +1006,43 @@ const adminHTML = `<!DOCTYPE html>
 <div class="exit-note" id="exitModeNote"></div>
 </div>
 
-<!-- 做多/做空方向控制（并排，各含独立 TP/SL + 实时信号指标） -->
-<div class="dir-grid">
-<div class="dir-card long-card" id="longCard">
+<!-- ▲ 做多独立控制面板 -->
+<div class="dir-card long-card" id="longCard" style="margin-bottom:8px">
   <div class="dir-head">
     <span class="dir-title">▲ 做多 (Long)</span>
     <span class="dir-status" id="longStatus"></span>
     <button class="dir-toggle" id="longToggle" onclick="toggleDir('long')"></button>
   </div>
-  <div class="dir-params">
-    <div class="field"><label for="long_tp_pct">止盈% <span id="v_long_tp_pct"></span></label><input id="long_tp_pct" type="range" min="0.001" max="0.05" step="0.001"></div>
-    <div class="field"><label for="long_sl_pct">止损% <span id="v_long_sl_pct"></span></label><input id="long_sl_pct" type="range" min="0.001" max="0.02" step="0.001"></div>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:6px">
+    <div class="dir-params" style="flex:0 0 auto">
+      <div class="field"><label for="long_tp_pct">止盈% <span id="v_long_tp_pct"></span></label><input id="long_tp_pct" type="range" min="0.001" max="0.05" step="0.001"></div>
+      <div class="field"><label for="long_sl_pct">止损% <span id="v_long_sl_pct"></span></label><input id="long_sl_pct" type="range" min="0.001" max="0.02" step="0.001"></div>
+    </div>
+    <div style="flex:1;min-width:240px;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;border-left:1px solid rgba(255,255,255,.08);padding-left:12px">
+      <div class="field" style="margin:0"><label for="trend_long_confidence" style="font-size:10px">趋势置信度 <span id="v_trend_long_confidence"></span></label><input id="trend_long_confidence" type="range" min="0.3" max="0.95" step="0.01"></div>
+      <div class="field" style="margin:0"><label for="squeeze_long_confidence" style="font-size:10px">Squeeze 置信度 <span id="v_squeeze_long_confidence"></span></label><input id="squeeze_long_confidence" type="range" min="0.3" max="0.95" step="0.01"></div>
+      <div class="field" style="margin:0"><label for="transition_long_confidence" style="font-size:10px">Transition 置信度 <span id="v_transition_long_confidence"></span></label><input id="transition_long_confidence" type="range" min="0.3" max="0.95" step="0.01"></div>
+    </div>
   </div>
 </div>
-<div class="dir-card short-card" id="shortCard">
+<!-- ▼ 做空独立控制面板 -->
+<div class="dir-card short-card" id="shortCard" style="margin-bottom:10px">
   <div class="dir-head">
     <span class="dir-title">▼ 做空 (Short)</span>
     <span class="dir-status" id="shortStatus"></span>
     <button class="dir-toggle" id="shortToggle" onclick="toggleDir('short')"></button>
   </div>
-  <div class="dir-params">
-    <div class="field"><label for="short_tp_pct">止盈% <span id="v_short_tp_pct"></span></label><input id="short_tp_pct" type="range" min="0.001" max="0.05" step="0.001"></div>
-    <div class="field"><label for="short_sl_pct">止损% <span id="v_short_sl_pct"></span></label><input id="short_sl_pct" type="range" min="0.001" max="0.02" step="0.001"></div>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:6px">
+    <div class="dir-params" style="flex:0 0 auto">
+      <div class="field"><label for="short_tp_pct">止盈% <span id="v_short_tp_pct"></span></label><input id="short_tp_pct" type="range" min="0.001" max="0.05" step="0.001"></div>
+      <div class="field"><label for="short_sl_pct">止损% <span id="v_short_sl_pct"></span></label><input id="short_sl_pct" type="range" min="0.001" max="0.02" step="0.001"></div>
+    </div>
+    <div style="flex:1;min-width:240px;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;border-left:1px solid rgba(255,255,255,.08);padding-left:12px">
+      <div class="field" style="margin:0"><label for="trend_short_confidence" style="font-size:10px">趋势置信度 <span id="v_trend_short_confidence"></span></label><input id="trend_short_confidence" type="range" min="0.3" max="0.95" step="0.01"></div>
+      <div class="field" style="margin:0"><label for="squeeze_short_confidence" style="font-size:10px">Squeeze 置信度 <span id="v_squeeze_short_confidence"></span></label><input id="squeeze_short_confidence" type="range" min="0.3" max="0.95" step="0.01"></div>
+      <div class="field" style="margin:0"><label for="transition_short_confidence" style="font-size:10px">Transition 置信度 <span id="v_transition_short_confidence"></span></label><input id="transition_short_confidence" type="range" min="0.3" max="0.95" step="0.01"></div>
+    </div>
   </div>
-</div>
 </div>
 
 <!-- 参数表单 + 引擎信号并排 -->
@@ -1068,7 +1081,7 @@ const adminHTML = `<!DOCTYPE html>
 const groups=[
 {title:'持仓时间 & 冷却',items:[['cooldown_after_exit_sec','number','冷却秒',0,300,1,v=>v+'s'],['max_holding_time_sec','number','最长持仓秒',60,86400,60,v=>v+'s'],['min_holding_time_sec','number','最短持仓秒',0,3600,5,v=>v+'s']]},
 {title:'交易执行',items:[['margin_usdt','number','保证金 USDT',1,100000,1,v=>v+' U'],['leverage','number','杠杆',1,10,1,v=>v+'x'],['use_maker_mode','checkbox','Maker 模式',0,0,0,v=>v?'开':'关'],['maker_offset_bps','range','Maker 偏移 bps',0,20,0.1,v=>v.toFixed(1)+' bps'],['guard_deadline_ms','number','保护单截止 ms',100,180,1,v=>v+'ms'],['depth_levels','number','深度档位',1,20,1,v=>v+'档']]},
-{title:'引擎阈值',items:[['trend_enabled','checkbox','趋势引擎',0,0,0,v=>v?'开':'关'],['trend_long_confidence','range','趋势 多置信度',0.3,0.95,0.01,v=>v.toFixed(2)],['trend_short_confidence','range','趋势 空置信度',0.3,0.95,0.01,v=>v.toFixed(2)],['oi_delta_threshold','range','OI Delta',0.001,0.02,0.001,v=>(v*100).toFixed(2)+'%'],['squeeze_enabled','checkbox','Squeeze 引擎',0,0,0,v=>v?'开':'关'],['squeeze_long_confidence','range','Squeeze 多置信度',0.3,0.95,0.01,v=>v.toFixed(2)],['squeeze_short_confidence','range','Squeeze 空置信度',0.3,0.95,0.01,v=>v.toFixed(2)],['basis_zscore_threshold','range','Basis ZScore',1,5,0.1,v=>v.toFixed(1)],['transition_enabled','checkbox','Transition 引擎',0,0,0,v=>v?'开':'关'],['transition_long_confidence','range','Transition 多置信度',0.3,0.95,0.01,v=>v.toFixed(2)],['transition_short_confidence','range','Transition 空置信度',0.3,0.95,0.01,v=>v.toFixed(2)],['vol_compression_ratio','range','波动压缩比',0.1,0.9,0.05,v=>v.toFixed(2)]]},
+{title:'引擎阈值',items:[['trend_enabled','checkbox','趋势引擎',0,0,0,v=>v?'开':'关'],['oi_delta_threshold','range','OI Delta',0.001,0.02,0.001,v=>(v*100).toFixed(2)+'%'],['squeeze_enabled','checkbox','Squeeze 引擎',0,0,0,v=>v?'开':'关'],['basis_zscore_threshold','range','Basis ZScore',1,5,0.1,v=>v.toFixed(1)],['transition_enabled','checkbox','Transition 引擎',0,0,0,v=>v?'开':'关'],['vol_compression_ratio','range','波动压缩比',0.1,0.9,0.05,v=>v.toFixed(2)]]},
 {title:'风控',items:[['max_slippage_bps','range','最大滑点 bps',1,100,0.5,v=>v.toFixed(1)+' bps'],['daily_loss_limit_pct','range','日亏损限制',0.001,0.2,0.001,v=>(v*100).toFixed(2)+'%'],['consecutive_loss_limit','number','连续亏损限制',1,20,1,v=>v+'次']]}
 ];
 let dirState={long_enabled:true,short_enabled:true};
@@ -1104,6 +1117,9 @@ function collect(){
   return o;
 }
 function msg(t,ok,el){const m=el||document.getElementById('msg');m.textContent=t;m.className='msg '+(ok?'ok':'err');setTimeout(()=>{m.className='msg'},5000)}
+// 方向卡置信度字段（在 dir-card 内，不在 #grid，手动加入 fields 以支持 populate/collect）
+const fmtC=v=>parseFloat(v).toFixed(2);
+['trend_long_confidence','squeeze_long_confidence','transition_long_confidence','trend_short_confidence','squeeze_short_confidence','transition_short_confidence'].forEach(id=>{const it=[id,'range','',0.3,0.95,0.01,fmtC];fields.push(it);});
 for(const it of fields){document.getElementById(it[0]).addEventListener('input',()=>refreshLabel(it))}
 function onExitModeChange(){
   const on=document.getElementById('signal_based_exit').checked;
