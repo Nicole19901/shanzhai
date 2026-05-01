@@ -1036,7 +1036,7 @@ const adminHTML = `<!DOCTYPE html>
 <div style="display:flex;gap:12px;align-items:flex-start">
 <form id="form" style="flex:1;min-width:0"><div id="grid" style="display:flex;flex-direction:column;gap:8px"></div><div class="actions"><button class="btn-save" type="submit">保存参数</button><button class="btn-restart" type="button" id="testParamsBtn">测试参数</button><button class="btn-init" type="button" id="initBtn">初始化</button><button class="btn-reset" type="button" id="resetBtn">恢复默认</button><button class="btn-start" type="button" id="startBtn">启动服务</button><button class="btn-restart" type="button" id="restartBtn">重启服务</button><button class="btn-stop" type="button" id="stopBtn">停止服务</button></div><div id="msg" class="msg"></div></form>
 <!-- 引擎信号（参数调节右侧） -->
-<div id="engSection" style="display:none;width:270px;flex-shrink:0"><div class="card" style="margin-bottom:0;padding:10px"><h2>引擎信号</h2><div class="eng-grid" style="grid-template-columns:1fr" id="engGrid"></div>
+<div id="engSection" style="width:270px;flex-shrink:0"><div class="card" style="margin-bottom:0;padding:10px"><h2>引擎信号</h2><div class="eng-grid" style="grid-template-columns:1fr" id="engGrid"></div>
 <div style="margin-top:10px;border-top:1px solid #29333d;padding-top:8px">
 <div class="di-title" style="color:#56d364;margin-bottom:5px">▲ 多头信号指标</div>
 <div class="di-row"><span class="di-label">买压 5s</span><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" id="dl_rcvd_f"></div></div><span class="mkt-val" id="dl_rcvd_v" style="min-width:54px;text-align:right;font-size:10px">--</span></div></div>
@@ -1220,14 +1220,12 @@ async function loadMarket(){try{
   if(!d||!d.ready){
     document.getElementById('mktNotReady').style.display='';
     document.getElementById('mktGrid').style.display='none';
-    document.getElementById('engSection').style.display='none';
     const cnt=d?d.msg_count||0:0;
     document.getElementById('mktNotReady').textContent=cnt>0?'引擎预热中（'+cnt+'/100 条消息）':'引擎启动后显示（等待 WS 数据）';
     return;
   }
   document.getElementById('mktNotReady').style.display='none';
   document.getElementById('mktGrid').style.display='';
-  document.getElementById('engSection').style.display='';
   document.getElementById('mktAge').textContent='延迟 '+(d.snapshot_age_ms||0)+'ms ['+selectedMktSym+']';
   // 价格
   document.getElementById('mv_mark').textContent=d.mark_price||'--';
