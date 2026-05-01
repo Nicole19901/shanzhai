@@ -14,7 +14,6 @@ type Channels struct {
 	ETHAggTrade  chan *AggTrade
 	ETHDepth     chan *DepthUpdate
 	ETHMarkPrice chan *MarkPrice
-	ETHKline1s   chan *Kline
 	ETHKline1m   chan *Kline
 }
 
@@ -23,7 +22,6 @@ func NewChannels() *Channels {
 		ETHAggTrade:  make(chan *AggTrade, 8192),
 		ETHDepth:     make(chan *DepthUpdate, 1024),
 		ETHMarkPrice: make(chan *MarkPrice, 128),
-		ETHKline1s:   make(chan *Kline, 128),
 		ETHKline1m:   make(chan *Kline, 64),
 	}
 }

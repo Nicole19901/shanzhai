@@ -111,26 +111,36 @@ func main() {
 	var symbolMsgCount int64
 	warmupDone := make(chan struct{})
 	go func() {
+		// 宽限期：前 10 次（5 分钟）只写 debug 日志，不刷 eventLog
+		// 超过宽限期后每 10 次（5 分钟）写一次 eventLog，避免刷屏
+		const graceTicks = 10
+		var tick int
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for {
 			<-ticker.C
+			tick++
 			if !rest.HasCredentials() {
-				log.Debug().Msg("data stream warmup waiting for verified API credentials")
+				log.Debug().Msg("data stream warmup: waiting for API credentials")
 				continue
 			}
 			symbolMsgs := atomic.LoadInt64(&symbolMsgCount)
 			if symbolMsgs < 100 {
-				log.Error().Str("symbol", currentSymbol()).Int64("symbol_msgs", symbolMsgs).
-					Msg("data stream warmup waiting: insufficient symbol messages")
-				eventLog.AddSystem("DATA_WARMUP_WAIT", "data stream warmup waiting: insufficient symbol messages", map[string]interface{}{
-					"symbol":      currentSymbol(),
-					"symbol_msgs": symbolMsgs,
-				})
+				log.Warn().Str("symbol", currentSymbol()).Int64("symbol_msgs", symbolMsgs).
+					Int("tick", tick).
+					Msg("data stream warmup: insufficient messages (WS may not be connected)")
+				// 宽限期内不刷 eventLog；超过后每 5 分钟记录一次
+				if tick > graceTicks && tick%10 == 1 {
+					eventLog.AddSystem("DATA_WARMUP_WAIT", fmt.Sprintf("数据流预热等待中：已收到 %d/100 条消息，请检查网络是否能访问 Binance WS", symbolMsgs), map[string]interface{}{
+						"symbol":      currentSymbol(),
+						"symbol_msgs": symbolMsgs,
+						"wait_min":    tick / 2,
+					})
+				}
 				continue
 			}
 			log.Info().Str("symbol", currentSymbol()).Int64("symbol_msgs", symbolMsgs).Msg("data stream stable")
-			eventLog.AddSystem("DATA_READY", "data stream stable", map[string]interface{}{
+			eventLog.AddSystem("DATA_READY", "数据流预热完成，开始计时引擎启动", map[string]interface{}{
 				"symbol":      currentSymbol(),
 				"symbol_msgs": symbolMsgs,
 			})
@@ -299,11 +309,17 @@ func main() {
 		case <-ctx.Done():
 			return
 		}
+		// 预热完成后额外等待 2 分钟，让微结构指标积累足够样本
+		const engineStartDelay = 2 * time.Minute
+		log.Info().Dur("delay", engineStartDelay).Msg("data stream ready, waiting for microstructure warmup before engine start")
+		eventLog.AddSystem("ENGINE_WARMUP", fmt.Sprintf("数据流就绪，引擎将在 %.0f 分钟后启动（等待微结构指标积累）", engineStartDelay.Minutes()), nil)
 		select {
-		case <-time.After(5 * time.Minute):
+		case <-time.After(engineStartDelay):
 		case <-ctx.Done():
 			return
 		}
+		log.Info().Msg("engine evaluator started")
+		eventLog.AddSystem("ENGINE_START", "引擎评估器已启动，开始监控信号", nil)
 
 		ticker := time.NewTicker(time.Duration(cfg.Sampling.FastIntervalMs) * time.Millisecond)
 		defer ticker.Stop()
