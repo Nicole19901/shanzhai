@@ -74,7 +74,7 @@ func NewTradeFlowTracker() *TradeFlowTracker {
 }
 
 func (t *TradeFlowTracker) Add(trade *datafeed.AggTrade) {
-	qty, _ := trade.Quantity.Float64()
+	qty := trade.Quantity
 	var sv float64
 	if !trade.IsBuyerMaker {
 		sv = qty

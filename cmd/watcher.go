@@ -506,15 +506,21 @@ func (w *SymbolWatcher) runEngineEvaluator(ctx context.Context, state *symState)
 			"msg_count":       state.msgCount.Load(),
 		})
 
-		// Configure engines from live params
-		trendEng.SetConfig(lp.TrendEnabled, lp.TrendConfidence, lp.OIDeltaThreshold)
-		squeezeEng.SetConfig(lp.SqueezeEnabled, lp.SqueezeConfidence, lp.BasisZScoreThreshold)
-		transEng.SetConfig(lp.TransitionEnabled, lp.TransitionConfidence, lp.VolCompressionRatio)
+		// Configure engines from live params（使用多空中较低阈值让引擎评估，方向过滤在下方逐信号处理）
+		trendMin := lp.TrendLongConfidence
+		if lp.TrendShortConfidence < trendMin { trendMin = lp.TrendShortConfidence }
+		squeezeMin := lp.SqueezeLongConfidence
+		if lp.SqueezeShortConfidence < squeezeMin { squeezeMin = lp.SqueezeShortConfidence }
+		transMin := lp.TransitionLongConfidence
+		if lp.TransitionShortConfidence < transMin { transMin = lp.TransitionShortConfidence }
+		trendEng.SetConfig(lp.TrendEnabled, trendMin, lp.OIDeltaThreshold)
+		squeezeEng.SetConfig(lp.SqueezeEnabled, squeezeMin, lp.BasisZScoreThreshold)
+		transEng.SetConfig(lp.TransitionEnabled, transMin, lp.VolCompressionRatio)
 
 		engThresholds := map[engine.EngineType]float64{
-			engine.EngineTrend:      lp.TrendConfidence,
-			engine.EngineSqueeze:    lp.SqueezeConfidence,
-			engine.EngineTransition: lp.TransitionConfidence,
+			engine.EngineTrend:      trendMin,
+			engine.EngineSqueeze:    squeezeMin,
+			engine.EngineTransition: transMin,
 		}
 
 		// Evaluate engines: build visual snapshots and fire signal hook on first valid signal.
@@ -526,6 +532,21 @@ func (w *SymbolWatcher) runEngineEvaluator(ctx context.Context, state *symState)
 		hookFired := false
 		for _, eng := range engines {
 			rawSig := eng.Evaluate(mctx)
+			// 方向独立置信度过滤
+			if rawSig != nil {
+				var dirThresh float64
+				switch eng.Name() {
+				case engine.EngineTrend:
+					if rawSig.Direction == datafeed.DirectionLong { dirThresh = lp.TrendLongConfidence } else { dirThresh = lp.TrendShortConfidence }
+				case engine.EngineSqueeze:
+					if rawSig.Direction == datafeed.DirectionLong { dirThresh = lp.SqueezeLongConfidence } else { dirThresh = lp.SqueezeShortConfidence }
+				case engine.EngineTransition:
+					if rawSig.Direction == datafeed.DirectionLong { dirThresh = lp.TransitionLongConfidence } else { dirThresh = lp.TransitionShortConfidence }
+				}
+				if rawSig.Confidence < dirThresh {
+					rawSig = nil
+				}
+			}
 			snap := engSigEntry{
 				Name:      string(eng.Name()),
 				Dir:       "FLAT",

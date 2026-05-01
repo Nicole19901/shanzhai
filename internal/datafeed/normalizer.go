@@ -74,10 +74,10 @@ func MakeAggTradeHandler(ch chan<- *AggTrade) func(json.RawMessage, int64) {
 			return
 		}
 
-		price, err1 := decimal.NewFromString(priceStr)
-		qty, err2 := decimal.NewFromString(qtyStr)
+		price, err1 := strconv.ParseFloat(priceStr, 64)
+		qty, err2 := strconv.ParseFloat(qtyStr, 64)
 		if err1 != nil || err2 != nil {
-			log.Warn().Msg("aggTrade decimal parse failed")
+			log.Warn().Msg("aggTrade float parse failed")
 			return
 		}
 		select {

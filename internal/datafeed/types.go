@@ -16,11 +16,12 @@ type PriceLevel struct {
 }
 
 // AggTrade 归一化后的成交数据，所有字段不可变
+// Price/Quantity 用 float64 避免热路径 decimal 堆分配
 type AggTrade struct {
 	Symbol       string
 	AggTradeID   int64
-	Price        decimal.Decimal
-	Quantity     decimal.Decimal
+	Price        float64
+	Quantity     float64
 	FirstTradeID int64
 	LastTradeID  int64
 	EventTime    int64 // ms

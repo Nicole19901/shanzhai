@@ -33,17 +33,20 @@ type LiveParams struct {
 	GuardDeadlineMs int64           // 兜底订单挂出最大延迟(ms)，规范下限100ms
 
 	// ── 引擎开关 + 置信度 ───────────────────────────────
-	TrendEnabled     bool
-	TrendConfidence  float64
-	OIDeltaThreshold float64
+	TrendEnabled              bool
+	TrendLongConfidence       float64
+	TrendShortConfidence      float64
+	OIDeltaThreshold          float64
 
-	SqueezeEnabled       bool
-	SqueezeConfidence    float64
-	BasisZScoreThreshold float64
+	SqueezeEnabled            bool
+	SqueezeLongConfidence     float64
+	SqueezeShortConfidence    float64
+	BasisZScoreThreshold      float64
 
-	TransitionEnabled    bool
-	TransitionConfidence float64
-	VolCompressionRatio  float64
+	TransitionEnabled          bool
+	TransitionLongConfidence   float64
+	TransitionShortConfidence  float64
+	VolCompressionRatio        float64
 
 	// ── 风控 ────────────────────────────────────────────
 	MaxSlippageBps       float64
@@ -85,17 +88,20 @@ type LiveParamsSnapshot struct {
 	MakerOffsetBps  float64 `json:"maker_offset_bps"`
 	GuardDeadlineMs int64   `json:"guard_deadline_ms"`
 
-	TrendEnabled     bool    `json:"trend_enabled"`
-	TrendConfidence  float64 `json:"trend_confidence"`
-	OIDeltaThreshold float64 `json:"oi_delta_threshold"`
+	TrendEnabled              bool    `json:"trend_enabled"`
+	TrendLongConfidence       float64 `json:"trend_long_confidence"`
+	TrendShortConfidence      float64 `json:"trend_short_confidence"`
+	OIDeltaThreshold          float64 `json:"oi_delta_threshold"`
 
-	SqueezeEnabled       bool    `json:"squeeze_enabled"`
-	SqueezeConfidence    float64 `json:"squeeze_confidence"`
-	BasisZScoreThreshold float64 `json:"basis_zscore_threshold"`
+	SqueezeEnabled            bool    `json:"squeeze_enabled"`
+	SqueezeLongConfidence     float64 `json:"squeeze_long_confidence"`
+	SqueezeShortConfidence    float64 `json:"squeeze_short_confidence"`
+	BasisZScoreThreshold      float64 `json:"basis_zscore_threshold"`
 
-	TransitionEnabled    bool    `json:"transition_enabled"`
-	TransitionConfidence float64 `json:"transition_confidence"`
-	VolCompressionRatio  float64 `json:"vol_compression_ratio"`
+	TransitionEnabled          bool    `json:"transition_enabled"`
+	TransitionLongConfidence   float64 `json:"transition_long_confidence"`
+	TransitionShortConfidence  float64 `json:"transition_short_confidence"`
+	VolCompressionRatio        float64 `json:"vol_compression_ratio"`
 
 	MaxSlippageBps       float64 `json:"max_slippage_bps"`
 	DailyLossLimitPct    float64 `json:"daily_loss_limit_pct"`
@@ -123,17 +129,20 @@ func NewLiveParams(cfg *config.Config) *LiveParams {
 		MakerOffsetBps:  2.0, // 默认 2bps 偏移
 		GuardDeadlineMs: 150, // 默认 150ms（规范要求 <200ms）
 
-		TrendEnabled:     cfg.Engines.Trend.Enabled,
-		TrendConfidence:  cfg.Engines.Trend.ConfidenceThreshold,
-		OIDeltaThreshold: cfg.Engines.Trend.OIDeltaThreshold,
+		TrendEnabled:             cfg.Engines.Trend.Enabled,
+		TrendLongConfidence:      cfg.Engines.Trend.ConfidenceThreshold,
+		TrendShortConfidence:     cfg.Engines.Trend.ConfidenceThreshold,
+		OIDeltaThreshold:         cfg.Engines.Trend.OIDeltaThreshold,
 
-		SqueezeEnabled:       cfg.Engines.Squeeze.Enabled,
-		SqueezeConfidence:    cfg.Engines.Squeeze.ConfidenceThreshold,
-		BasisZScoreThreshold: cfg.Engines.Squeeze.BasisZScoreThreshold,
+		SqueezeEnabled:           cfg.Engines.Squeeze.Enabled,
+		SqueezeLongConfidence:    cfg.Engines.Squeeze.ConfidenceThreshold,
+		SqueezeShortConfidence:   cfg.Engines.Squeeze.ConfidenceThreshold,
+		BasisZScoreThreshold:     cfg.Engines.Squeeze.BasisZScoreThreshold,
 
-		TransitionEnabled:    cfg.Engines.Transition.Enabled,
-		TransitionConfidence: cfg.Engines.Transition.ConfidenceThreshold,
-		VolCompressionRatio:  cfg.Engines.Transition.VolCompressionRatio,
+		TransitionEnabled:         cfg.Engines.Transition.Enabled,
+		TransitionLongConfidence:  cfg.Engines.Transition.ConfidenceThreshold,
+		TransitionShortConfidence: cfg.Engines.Transition.ConfidenceThreshold,
+		VolCompressionRatio:       cfg.Engines.Transition.VolCompressionRatio,
 
 		MaxSlippageBps:       cfg.Risk.MaxSlippageBps,
 		DailyLossLimitPct:    cfg.Risk.DailyLossLimitPct,
@@ -196,17 +205,20 @@ func (lp *LiveParams) snapshotLocked() LiveParamsSnapshot {
 		MakerOffsetBps:  lp.MakerOffsetBps,
 		GuardDeadlineMs: lp.GuardDeadlineMs,
 
-		TrendEnabled:     lp.TrendEnabled,
-		TrendConfidence:  lp.TrendConfidence,
-		OIDeltaThreshold: lp.OIDeltaThreshold,
+		TrendEnabled:             lp.TrendEnabled,
+		TrendLongConfidence:      lp.TrendLongConfidence,
+		TrendShortConfidence:     lp.TrendShortConfidence,
+		OIDeltaThreshold:         lp.OIDeltaThreshold,
 
-		SqueezeEnabled:       lp.SqueezeEnabled,
-		SqueezeConfidence:    lp.SqueezeConfidence,
-		BasisZScoreThreshold: lp.BasisZScoreThreshold,
+		SqueezeEnabled:           lp.SqueezeEnabled,
+		SqueezeLongConfidence:    lp.SqueezeLongConfidence,
+		SqueezeShortConfidence:   lp.SqueezeShortConfidence,
+		BasisZScoreThreshold:     lp.BasisZScoreThreshold,
 
-		TransitionEnabled:    lp.TransitionEnabled,
-		TransitionConfidence: lp.TransitionConfidence,
-		VolCompressionRatio:  lp.VolCompressionRatio,
+		TransitionEnabled:         lp.TransitionEnabled,
+		TransitionLongConfidence:  lp.TransitionLongConfidence,
+		TransitionShortConfidence: lp.TransitionShortConfidence,
+		VolCompressionRatio:       lp.VolCompressionRatio,
 
 		MaxSlippageBps:       lp.MaxSlippageBps,
 		DailyLossLimitPct:    lp.DailyLossLimitPct,
@@ -259,15 +271,18 @@ func (lp *LiveParams) apply(s LiveParamsSnapshot) {
 	lp.GuardDeadlineMs = s.GuardDeadlineMs
 
 	lp.TrendEnabled = s.TrendEnabled
-	lp.TrendConfidence = s.TrendConfidence
+	lp.TrendLongConfidence = s.TrendLongConfidence
+	lp.TrendShortConfidence = s.TrendShortConfidence
 	lp.OIDeltaThreshold = s.OIDeltaThreshold
 
 	lp.SqueezeEnabled = s.SqueezeEnabled
-	lp.SqueezeConfidence = s.SqueezeConfidence
+	lp.SqueezeLongConfidence = s.SqueezeLongConfidence
+	lp.SqueezeShortConfidence = s.SqueezeShortConfidence
 	lp.BasisZScoreThreshold = s.BasisZScoreThreshold
 
 	lp.TransitionEnabled = s.TransitionEnabled
-	lp.TransitionConfidence = s.TransitionConfidence
+	lp.TransitionLongConfidence = s.TransitionLongConfidence
+	lp.TransitionShortConfidence = s.TransitionShortConfidence
 	lp.VolCompressionRatio = s.VolCompressionRatio
 
 	lp.MaxSlippageBps = s.MaxSlippageBps
