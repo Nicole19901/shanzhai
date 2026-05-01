@@ -113,6 +113,10 @@ type Server struct {
 	switchSymbol   func(context.Context, string) error
 	statusProvider StatusProvider
 	marketProvider MarketProvider
+
+	watchlistAdd    func(ctx context.Context, sym string) error
+	watchlistRemove func(sym string)
+	watchlistGet    func() []string
 }
 
 func NewServer(params *LiveParams, events *EventLog, rest *datafeed.RESTClient, serviceName, symbol string) *Server {
@@ -136,6 +140,17 @@ func (s *Server) SetSymbolSwitcher(fn func(context.Context, string) error) { s.s
 func (s *Server) SetStatusProvider(fn StatusProvider) { s.statusProvider = fn }
 
 func (s *Server) SetMarketProvider(fn MarketProvider) { s.marketProvider = fn }
+
+// SetWatchlistHandlers registers the watchlist add/remove/get functions.
+func (s *Server) SetWatchlistHandlers(
+	add func(ctx context.Context, sym string) error,
+	remove func(sym string),
+	get func() []string,
+) {
+	s.watchlistAdd = add
+	s.watchlistRemove = remove
+	s.watchlistGet = get
+}
 
 func (s *Server) SetSymbol(sym string) {
 	s.symbolMu.Lock()
@@ -170,6 +185,7 @@ func (s *Server) Listen(addr string) {
 	mux.HandleFunc("/api/trade/close", s.auth(s.handleTradeClose))
 	mux.HandleFunc("/api/status", s.auth(s.handleStatus))
 	mux.HandleFunc("/api/market", s.auth(s.handleMarket))
+	mux.HandleFunc("/api/watchlist", s.auth(s.handleWatchlist))
 
 	log.Info().Str("addr", addr).Msg("webui server starting")
 	if s.events != nil {
@@ -240,6 +256,8 @@ func (s *Server) handleCredentials(w http.ResponseWriter, r *http.Request, apply
 			s.events.AddSystem("KEY_APPLIED", "API Key 验证成功，时钟已同步，请继续设置交易对", map[string]interface{}{
 				"clock_offset_ms": s.rest.TimeOffset(),
 			})
+			s.events.AddOperation("KEY_APPLIED", "API Key 已应用，时钟已同步",
+				map[string]interface{}{"clock_offset_ms": s.rest.TimeOffset()})
 		}
 	} else if s.events != nil {
 		s.events.AddSystem("KEY_VERIFIED", "credential balance verification passed", nil)
@@ -321,6 +339,8 @@ func (s *Server) handleKeyActivate(w http.ResponseWriter, r *http.Request) {
 	log.Info().Str("label", req.Label).Msg("webui: switched to saved API key")
 	if s.events != nil {
 		s.events.AddSystem("KEY_SWITCHED", "switched to saved API key", map[string]interface{}{"label": req.Label})
+		s.events.AddOperation("KEY_SWITCHED", fmt.Sprintf("已切换到密钥: %s", req.Label),
+			map[string]interface{}{"label": req.Label})
 	}
 	writeJSON(w, map[string]interface{}{"status": "activated", "label": req.Label})
 }
@@ -373,6 +393,9 @@ func (s *Server) handleSymbol(w http.ResponseWriter, r *http.Request) {
 		s.SetSymbol(sym)
 		if s.events != nil {
 			s.events.AddSystem("SYMBOL_SWITCHED", "runtime symbol switched", map[string]interface{}{"symbol": sym})
+			s.events.AddOperation("SYMBOL_SWITCHED",
+				fmt.Sprintf("交易对已切换到: %s，WS 连接建立中", sym),
+				map[string]interface{}{"symbol": sym})
 		}
 		writeJSON(w, map[string]string{"status": "ok", "symbol": sym})
 	default:
@@ -468,7 +491,78 @@ func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, s.marketProvider())
 		return
 	}
-	writeJSON(w, map[string]interface{}{"ready": false})
+	writeJSON(w, map[string]interface{}{"symbols": map[string]interface{}{}, "active": s.getSymbol()})
+}
+
+func (s *Server) handleWatchlist(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		var syms []string
+		if s.watchlistGet != nil {
+			syms = s.watchlistGet()
+		}
+		writeJSON(w, map[string]interface{}{"symbols": syms})
+	case http.MethodPost:
+		var req struct {
+			Symbol string `json:"symbol"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+		sym := normalizeSymbol(req.Symbol)
+		if sym == "" {
+			http.Error(w, "symbol is required", http.StatusBadRequest)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		ok, err := s.rest.ValidateSymbol(ctx, sym)
+		if err != nil || !ok {
+			errMsg := "symbol not found on Binance Futures"
+			if err != nil {
+				errMsg = err.Error()
+			}
+			http.Error(w, errMsg, http.StatusBadRequest)
+			return
+		}
+		if s.watchlistAdd != nil {
+			if err := s.watchlistAdd(r.Context(), sym); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		if s.events != nil {
+			s.events.AddOperation("WATCHLIST_ADD",
+				fmt.Sprintf("监控列表: 已加入 %s，WS 数据连接建立中", sym),
+				map[string]interface{}{"symbol": sym})
+		}
+		writeJSON(w, map[string]interface{}{"status": "added", "symbol": sym})
+	case http.MethodDelete:
+		var req struct {
+			Symbol string `json:"symbol"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+		sym := normalizeSymbol(req.Symbol)
+		if sym == "" {
+			http.Error(w, "symbol is required", http.StatusBadRequest)
+			return
+		}
+		if s.watchlistRemove != nil {
+			s.watchlistRemove(sym)
+		}
+		if s.events != nil {
+			s.events.AddOperation("WATCHLIST_REMOVE",
+				fmt.Sprintf("监控列表: 已移除 %s，WS 连接已断开", sym),
+				map[string]interface{}{"symbol": sym})
+		}
+		writeJSON(w, map[string]interface{}{"status": "removed", "symbol": sym})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func (s *Server) handleTradeClose(w http.ResponseWriter, r *http.Request) {
@@ -518,6 +612,7 @@ func (s *Server) handleParams(w http.ResponseWriter, r *http.Request) {
 			"defaults": s.params.Defaults(),
 		})
 	case http.MethodPost:
+		old := s.params.Get()
 		var snap LiveParamsSnapshot
 		if err := json.NewDecoder(r.Body).Decode(&snap); err != nil {
 			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
@@ -534,6 +629,15 @@ func (s *Server) handleParams(w http.ResponseWriter, r *http.Request) {
 			if err := s.rest.SetLeverage(ctx, s.getSymbol(), snap.Leverage); err != nil {
 				http.Error(w, "set leverage failed: "+err.Error(), http.StatusBadRequest)
 				return
+			}
+		}
+		// 生成操作日志（仅记录变更字段）
+		if s.events != nil {
+			diffs := paramsDiff(old, snap)
+			if len(diffs) > 0 {
+				s.events.AddOperation("PARAMS_CHANGED",
+					fmt.Sprintf("参数已修改: %s", strings.Join(diffs, "，")),
+					map[string]interface{}{"changes": diffs})
 			}
 		}
 		log.Info().Interface("params", snap).Msg("webui: params updated")
@@ -571,7 +675,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodDelete {
 		category := r.URL.Query().Get("category")
 		switch category {
-		case "trade", "system", "reject", "all":
+		case "trade", "system", "reject", "operation", "all":
 			s.events.ClearCategory(category)
 			writeJSON(w, map[string]string{"status": "cleared", "category": category})
 		default:
@@ -584,10 +688,11 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]interface{}{
-		"entries": s.events.Recent(),
-		"trades":  s.events.RecentByCategory("trade"),
-		"system":  s.events.RecentByCategory("system"),
-		"rejects": s.events.RecentByCategory("reject"),
+		"entries":   s.events.Recent(),
+		"trades":    s.events.RecentByCategory("trade"),
+		"system":    s.events.RecentByCategory("system"),
+		"rejects":   s.events.RecentByCategory("reject"),
+		"operation": s.events.RecentByCategory("operation"),
 	})
 }
 
@@ -621,6 +726,60 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request, action st
 		s.events.AddSystem("SERVICE_CONTROL", "服务控制命令已执行", map[string]interface{}{"action": action, "cmd": scExe})
 	}
 	writeJSON(w, map[string]string{"status": "ok", "action": action, "cmd": scExe})
+}
+
+// paramsDiff returns human-readable descriptions of changed fields between old and new snapshot.
+func paramsDiff(old, next LiveParamsSnapshot) []string {
+	var d []string
+	b2s := func(v bool) string {
+		if v {
+			return "开"
+		}
+		return "关"
+	}
+	if old.Leverage != next.Leverage {
+		d = append(d, fmt.Sprintf("杠杆 %dx→%dx", old.Leverage, next.Leverage))
+	}
+	if old.MarginUSDT != next.MarginUSDT {
+		d = append(d, fmt.Sprintf("保证金 %s→%s U", old.MarginUSDT, next.MarginUSDT))
+	}
+	if old.LongTPPct != next.LongTPPct {
+		d = append(d, fmt.Sprintf("多止盈 %.2f%%→%.2f%%", old.LongTPPct*100, next.LongTPPct*100))
+	}
+	if old.LongSLPct != next.LongSLPct {
+		d = append(d, fmt.Sprintf("多止损 %.2f%%→%.2f%%", old.LongSLPct*100, next.LongSLPct*100))
+	}
+	if old.ShortTPPct != next.ShortTPPct {
+		d = append(d, fmt.Sprintf("空止盈 %.2f%%→%.2f%%", old.ShortTPPct*100, next.ShortTPPct*100))
+	}
+	if old.ShortSLPct != next.ShortSLPct {
+		d = append(d, fmt.Sprintf("空止损 %.2f%%→%.2f%%", old.ShortSLPct*100, next.ShortSLPct*100))
+	}
+	if old.LongEnabled != next.LongEnabled {
+		d = append(d, fmt.Sprintf("做多 %s→%s", b2s(old.LongEnabled), b2s(next.LongEnabled)))
+	}
+	if old.ShortEnabled != next.ShortEnabled {
+		d = append(d, fmt.Sprintf("做空 %s→%s", b2s(old.ShortEnabled), b2s(next.ShortEnabled)))
+	}
+	if old.TrendEnabled != next.TrendEnabled {
+		d = append(d, fmt.Sprintf("趋势引擎 %s→%s", b2s(old.TrendEnabled), b2s(next.TrendEnabled)))
+	}
+	if old.SqueezeEnabled != next.SqueezeEnabled {
+		d = append(d, fmt.Sprintf("Squeeze引擎 %s→%s", b2s(old.SqueezeEnabled), b2s(next.SqueezeEnabled)))
+	}
+	if old.TransitionEnabled != next.TransitionEnabled {
+		d = append(d, fmt.Sprintf("Transition引擎 %s→%s", b2s(old.TransitionEnabled), b2s(next.TransitionEnabled)))
+	}
+	if old.SignalBasedExit != next.SignalBasedExit {
+		d = append(d, fmt.Sprintf("信号平仓 %s→%s", b2s(old.SignalBasedExit), b2s(next.SignalBasedExit)))
+	}
+	if old.TrendConfidence != next.TrendConfidence {
+		d = append(d, fmt.Sprintf("趋势置信度 %.2f→%.2f", old.TrendConfidence, next.TrendConfidence))
+	}
+	if old.MaxSlippageBps != next.MaxSlippageBps {
+		d = append(d, fmt.Sprintf("最大滑点 %.1f→%.1fbps", old.MaxSlippageBps, next.MaxSlippageBps))
+	}
+	return d
 }
 
 func validateSnapshot(s LiveParamsSnapshot) error {
@@ -758,6 +917,8 @@ const adminHTML = `<!DOCTYPE html>
 <body>
 <div class="top"><h1>量化交易控制台</h1><div style="display:flex;gap:8px;flex-wrap:wrap"><span class="badge symbol" id="symbolBadge">交易对 ...</span><span class="badge" id="wsMsgBadge" style="background:#0d1116;color:#8b949e;border-color:#3b434c">WS: --</span><span class="badge" id="posBadge">持仓: --</span></div></div>
 
+<!-- 币种 Tab 栏 -->
+<div id="mktTabBar" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px"></div>
 <!-- 市场指标可视化面板 -->
 <div class="mkt" id="mktPanel">
 <div class="mkt-title">📊 实时市场指标 <span id="mktAge" style="color:#8b949e;font-size:10px;font-weight:400"></span><span id="mktNotReady" style="color:#8b949e;font-size:10px">引擎启动后显示</span></div>
@@ -850,12 +1011,14 @@ const adminHTML = `<!DOCTYPE html>
 <form id="form"><div id="grid" style="display:flex;flex-direction:column;gap:8px"></div><div class="actions"><button class="btn-save" type="submit">保存参数</button><button class="btn-restart" type="button" id="testParamsBtn">测试参数</button><button class="btn-init" type="button" id="initBtn">初始化</button><button class="btn-reset" type="button" id="resetBtn">恢复默认</button><button class="btn-start" type="button" id="startBtn">启动服务</button><button class="btn-restart" type="button" id="restartBtn">重启服务</button><button class="btn-stop" type="button" id="stopBtn">停止服务</button></div><div id="msg" class="msg"></div></form>
 
 <div class="grid2" style="margin-top:10px">
-<section class="card"><h2>交易对切换</h2><div style="display:flex;gap:6px;align-items:flex-end;flex-wrap:wrap"><div class="field" style="flex:1;min-width:140px;margin:0"><label for="symbolInput">输入币种，如 ETH 或 ETHUSDT</label><input id="symbolInput" type="text" placeholder="ETHUSDT" autocomplete="off" spellcheck="false"></div><button class="btn-verify" type="button" id="validateSymbolBtn">验证</button><button class="btn-apply" type="button" id="applySymbolBtn" disabled>切换</button></div><div class="field" style="margin-top:6px"><label for="symbolConfirm">防误触确认：再次输入完整交易对</label><input id="symbolConfirm" type="text" placeholder="ETHUSDT" autocomplete="off" spellcheck="false"></div><div id="symbolResult" class="muted" style="margin-top:6px"></div><div class="muted" style="margin-top:4px">有持仓时拒绝切换；切换后数据流、OI、下单均跟随新交易对。</div></section>
+<section class="card"><h2>交易对切换</h2><div style="display:flex;gap:6px;align-items:flex-end;flex-wrap:wrap"><div class="field" style="flex:1;min-width:140px;margin:0"><label for="symbolInput">输入币种，如 ETH 或 ETHUSDT</label><input id="symbolInput" type="text" placeholder="ETHUSDT" autocomplete="off" spellcheck="false"></div><button class="btn-verify" type="button" id="validateSymbolBtn">验证</button><button class="btn-apply" type="button" id="applySymbolBtn" disabled>切换</button></div><div class="field" style="margin-top:6px"><label for="symbolConfirm">防误触确认：再次输入完整交易对</label><input id="symbolConfirm" type="text" placeholder="ETHUSDT" autocomplete="off" spellcheck="false"></div><div id="symbolResult" class="muted" style="margin-top:6px"></div><div class="muted" style="margin-top:4px">有持仓时拒绝切换；切换后数据流、OI、下单均跟随新交易对。</div>
+<div style="border-top:1px solid #29333d;padding-top:8px;margin-top:8px"><h2 style="font-size:12px;margin:0 0 6px;color:#a9b7c4;text-transform:uppercase">监控列表（多币信号可视化）</h2><div style="display:flex;gap:6px;margin-bottom:6px"><input id="watchlistInput" type="text" placeholder="SOLUSDT" style="flex:1" autocomplete="off" spellcheck="false"><button class="btn-verify" type="button" onclick="addToWatchlist()">加入监控</button></div><div id="watchlistResult" class="muted" style="margin-bottom:6px"></div><div id="watchlistItems"></div><div class="muted" style="margin-top:4px;font-size:10px">加入后自动建立 WS 连接并进入引擎，点击上方 Tab 切换指标显示</div></div>
+</section>
 <section class="card"><h2>API 密钥管理</h2><div class="grid2" style="gap:6px;margin-bottom:8px"><div class="field"><label for="apiKey">API Key</label><input id="apiKey" autocomplete="off" spellcheck="false"></div><div class="field"><label for="apiSecret">API Secret</label><input id="apiSecret" type="password" autocomplete="off"></div></div><div class="actions"><button class="btn-verify" id="verifyKeyBtn">验证余额和持仓</button><button class="btn-apply" id="applyKeyBtn">验证并应用</button><button class="btn-neutral" id="clearBalanceBtn">清除</button></div><div style="display:flex;gap:6px;align-items:flex-end;flex-wrap:wrap;border-top:1px solid #29333d;padding-top:8px;margin-top:8px"><div class="field" style="flex:1;min-width:100px;margin:0"><label for="keyLabel">标签</label><input id="keyLabel" type="text" placeholder="主账户"></div><button class="btn-neutral" id="saveKeyBtn">保存</button></div><div id="savedKeys" style="margin-top:8px"></div></section>
 </div>
 
 <div class="modal-bg" id="verifyModal"><div class="modal"><h3>账户验证结果</h3><div id="modalContent"></div><div class="modal-actions"><button class="btn-apply" id="modalApplyBtn">应用此密钥</button><button class="btn-neutral" id="modalCancelBtn">取消</button></div></div></div>
-<section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin-top:10px"><div class="card"><div class="logbar"><h2 style="margin:0">交易日志</h2><span class="muted" id="tradeHint"></span><button class="btn-neutral" style="padding:3px 7px;font-size:11px" id="clearTradeBtn">清除</button></div><div class="loglist" id="tradeLogs"></div></div><div class="card"><div class="logbar"><h2 style="margin:0">系统日志</h2><span class="muted" id="systemHint"></span><button class="btn-neutral" style="padding:3px 7px;font-size:11px" id="clearSystemBtn">清除</button></div><div class="loglist" id="systemLogs"></div></div><div class="card"><div class="logbar"><h2 style="margin:0">拒绝日志</h2><span class="muted" id="rejectHint"></span><button class="btn-neutral" style="padding:3px 7px;font-size:11px" id="clearRejectBtn">清除</button></div><div class="loglist" id="rejectLogs"></div></div></section>
+<section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin-top:10px"><div class="card"><div class="logbar"><h2 style="margin:0">操作日志</h2><span class="muted" id="opHint"></span><button class="btn-neutral" style="padding:3px 7px;font-size:11px" id="clearOpBtn">清除</button></div><div class="loglist" id="opLogs"></div></div><div class="card"><div class="logbar"><h2 style="margin:0">交易日志</h2><span class="muted" id="tradeHint"></span><button class="btn-neutral" style="padding:3px 7px;font-size:11px" id="clearTradeBtn">清除</button></div><div class="loglist" id="tradeLogs"></div></div><div class="card"><div class="logbar"><h2 style="margin:0">系统日志</h2><span class="muted" id="systemHint"></span><button class="btn-neutral" style="padding:3px 7px;font-size:11px" id="clearSystemBtn">清除</button></div><div class="loglist" id="systemLogs"></div></div><div class="card"><div class="logbar"><h2 style="margin:0">拒绝日志</h2><span class="muted" id="rejectHint"></span><button class="btn-neutral" style="padding:3px 7px;font-size:11px" id="clearRejectBtn">清除</button></div><div class="loglist" id="rejectLogs"></div></div></section>
 
 <script>
 const groups=[
@@ -963,11 +1126,12 @@ async function activateKey(label){if(!confirm('切换到密钥 '+label+'？'))re
 async function deleteKey(label){if(!confirm('删除密钥 '+label+'？'))return;const r=await fetch('/api/keys/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label})});if(r.ok){msg('已删除 '+label,true);loadKeys()}else msg('删除失败',false)}
 function formatLog(e){const f=e.fields||{};return[e.message,f.engine&&('引擎:'+f.engine),f.dir&&('方向:'+f.dir),f.qty&&('数量:'+f.qty),f.entry&&('开仓:'+f.entry),f.exit&&('平仓:'+f.exit),f.pnl_pct!==undefined&&('PnL:'+(Number(f.pnl_pct)*100).toFixed(4)+'%'),f.reason&&('原因:'+f.reason),f.error&&('错误:'+f.error),f.est_slip_bps!==undefined&&('滑点:'+Number(f.est_slip_bps).toFixed(2)+'bps')].filter(Boolean).join(' | ')}
 function renderLogBox(id,entries,empty){const box=document.getElementById(id);box.innerHTML='';if(!entries.length){box.innerHTML='<div class="row"><div class="details">'+empty+'</div></div>';return}for(const e of entries.slice().reverse()){const row=document.createElement('div');row.className='row';row.innerHTML='<div class="time">'+new Date(e.time).toLocaleString()+'</div><div class="type">'+e.type+'</div><div class="details">'+formatLog(e)+'</div>';box.appendChild(row)}}
-async function loadLogs(){const now='刷新于 '+new Date().toLocaleTimeString();try{const r=await fetch('/api/logs');const d=await r.json();renderLogBox('tradeLogs',d.trades||[],'暂无开仓/平仓记录');renderLogBox('systemLogs',d.system||[],'暂无系统日志');renderLogBox('rejectLogs',d.rejects||[],'暂无拒绝记录');['tradeHint','systemHint','rejectHint'].forEach(id=>document.getElementById(id).textContent=now)}catch(e){['tradeHint','systemHint','rejectHint'].forEach(id=>document.getElementById(id).textContent='加载失败')}}
+async function loadLogs(){const now='刷新于 '+new Date().toLocaleTimeString();try{const r=await fetch('/api/logs');const d=await r.json();renderLogBox('tradeLogs',d.trades||[],'暂无开仓/平仓记录');renderLogBox('systemLogs',d.system||[],'暂无系统日志');renderLogBox('rejectLogs',d.rejects||[],'暂无拒绝记录');renderLogBox('opLogs',d.operation||[],'暂无操作记录');['tradeHint','systemHint','rejectHint','opHint'].forEach(id=>document.getElementById(id).textContent=now)}catch(e){['tradeHint','systemHint','rejectHint','opHint'].forEach(id=>document.getElementById(id).textContent='加载失败')}}
 async function clearLogs(cat){const r=await fetch('/api/logs?category='+cat,{method:'DELETE'});if(r.ok)loadLogs()}
 document.getElementById('clearTradeBtn').onclick=()=>clearLogs('trade');
 document.getElementById('clearSystemBtn').onclick=()=>clearLogs('system');
 document.getElementById('clearRejectBtn').onclick=()=>clearLogs('reject');
+document.getElementById('clearOpBtn').onclick=()=>clearLogs('operation');
 async function loadSymbol(){try{const r=await fetch('/api/symbol');const d=await r.json();document.getElementById('symbolBadge').textContent='交易对 '+(d.symbol||'--')}catch(e){}}
 function dirBar(fillId,valId,raw,scale){
   const fill=document.getElementById(fillId),val=document.getElementById(valId);if(!fill||!val)return;
@@ -982,28 +1146,58 @@ function colorVal(id,v,fmtFn,posThresh=0,negThresh=0){
   el.textContent=fmtFn(v);
   el.className='mkt-val '+(v>posThresh?'pos':v<negThresh?'neg':'neu');
 }
+// 当前选中的市场指标显示币种
+let selectedMktSym='';
+function renderWatchTabs(symKeys,active){
+  const bar=document.getElementById('mktTabBar');if(!bar)return;
+  bar.innerHTML='';
+  if(!symKeys||!symKeys.length){return;}
+  symKeys.forEach(s=>{
+    const btn=document.createElement('button');
+    const isActive=s===selectedMktSym||(selectedMktSym===''&&s===active);
+    btn.textContent=s+(s===active?' ★':'');
+    btn.style.cssText='border:0;border-radius:4px;padding:3px 9px;font-size:11px;cursor:pointer;font-weight:600;'
+      +(isActive?'background:#0969da;color:#fff':'background:#1c2128;color:#8b949e');
+    btn.onclick=()=>{selectedMktSym=s;};
+    bar.appendChild(btn);
+  });
+}
 async function loadMarket(){try{
   const r=await fetch('/api/market');if(!r.ok)return;
-  const d=await r.json();
-  if(!d.ready){return;}
+  const resp=await r.json();
+  const syms=resp.symbols||{};
+  const active=resp.active||'';
+  const symKeys=Object.keys(syms);
+  renderWatchTabs(symKeys,active);
+  renderWatchlistItems(symKeys,active);
+  // 选择要展示的币种
+  if(!selectedMktSym||!syms[selectedMktSym])selectedMktSym=active;
+  const d=syms[selectedMktSym];
+  if(!d||!d.ready){
+    document.getElementById('mktNotReady').style.display='';
+    document.getElementById('mktGrid').style.display='none';
+    document.getElementById('engSection').style.display='none';
+    const cnt=d?d.msg_count||0:0;
+    document.getElementById('mktNotReady').textContent=cnt>0?'引擎预热中（'+cnt+'/100 条消息）':'引擎启动后显示（等待 WS 数据）';
+    return;
+  }
   document.getElementById('mktNotReady').style.display='none';
   document.getElementById('mktGrid').style.display='';
   document.getElementById('engSection').style.display='';
-  document.getElementById('mktAge').textContent='延迟 '+(d.snapshot_age_ms||0)+'ms';
+  document.getElementById('mktAge').textContent='延迟 '+(d.snapshot_age_ms||0)+'ms ['+selectedMktSym+']';
   // 价格
   document.getElementById('mv_mark').textContent=d.mark_price||'--';
   document.getElementById('mv_index').textContent=d.index_price||'--';
   colorVal('mv_basis_bps',d.basis_bps||0,v=>v.toFixed(3)+' bps');
   colorVal('mv_basis_z',d.basis_zscore||0,v=>v.toFixed(2));
   colorVal('mv_funding',d.funding_rate||0,v=>(v*100).toFixed(4)+'%');
-  // 下次资金费倒计时
   const nf=d.next_funding_ms||0;if(nf>0){const rem=Math.max(0,nf-Date.now());const m=Math.floor(rem/60000);const s=Math.floor((rem%60000)/1000);document.getElementById('mv_next_fund').textContent=m+'m'+s+'s'}
   colorVal('mv_mom',d.price_momentum||0,v=>(v*100).toFixed(3)+'%');
-  // RCVD 方向条（以 0.05 为满格）
+  // RCVD 方向条
   dirBar('rb_5s','rv_5s',d.rcvd_5s||0,0.05);
   dirBar('rb_30s','rv_30s',d.rcvd_30s||0,0.05);
   dirBar('rb_5m','rv_5m',d.rcvd_5m||0,0.05);
-  // OI Delta（以 baseline 10% 为满格，或直接用绝对值）
+  // OI Delta
   const base=Math.max(Math.abs(d.oi_baseline||1),1);
   dirBar('ob_5s','ov_5s',d.oi_delta_5s||0,base*0.02);
   dirBar('ob_30s','ov_30s',d.oi_delta_30s||0,base*0.05);
@@ -1035,8 +1229,38 @@ async function loadMarket(){try{
       +'</div>';
   }
 }catch(e){}}
+// 监控列表显示（只读，用于市场面板与列表同步）
+function renderWatchlistItems(symKeys,active){
+  const box=document.getElementById('watchlistItems');if(!box)return;
+  if(!symKeys||!symKeys.length){box.innerHTML='<div class="muted">暂无监控币种</div>';return;}
+  box.innerHTML=symKeys.map(s=>'<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #202a33">'
+    +'<span style="flex:1;font-size:12px;font-family:Consolas,monospace;color:'+(s===active?'#56d364':'#d6dee6')+'">'
+    +s+(s===active?' ★ 交易中':'')+'</span>'
+    +'<button class="btn-neutral" style="padding:2px 7px;font-size:11px" onclick="removeFromWatchlist(\''+s+'\')">移除</button>'
+    +'</div>').join('');
+}
+async function addToWatchlist(){
+  const inp=document.getElementById('watchlistInput');
+  const sym=(inp.value||'').trim().toUpperCase();
+  if(!sym){msg('请输入币种',false);return;}
+  const el=document.getElementById('watchlistResult');
+  el.textContent='验证中...';el.style.color='#8b949e';
+  const r=await fetch('/api/watchlist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:sym})});
+  if(r.ok){
+    el.style.color='#56d364';el.textContent=sym+' 已加入监控，WS 连接建立中';
+    inp.value='';selectedMktSym=sym;loadLogs();
+  } else {
+    el.style.color='#ff7b72';el.textContent='加入失败: '+await r.text();
+  }
+}
+async function removeFromWatchlist(sym){
+  if(!confirm('移除监控 '+sym+'？WS 数据连接将断开。'))return;
+  const r=await fetch('/api/watchlist',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:sym})});
+  if(r.ok){if(selectedMktSym===sym)selectedMktSym='';loadLogs();}
+  else msg('移除失败: '+await r.text(),false);
+}
 async function loadStatus(){try{const r=await fetch('/api/status');if(!r.ok)return;const d=await r.json();const el=document.getElementById('wsMsgBadge');const n=d.ws_msg_count||0;const done=d.warmup_done||false;if(done){el.style.background='#0d2231';el.style.color='#56d364';el.style.borderColor='#238636';el.textContent='WS: 就绪 '+n+' 条'}else if(n>0){el.style.background='#1a1a0d';el.style.color='#e3b341';el.style.borderColor='#9e6a03';el.textContent='WS: 预热中 '+n+'/100'}else{el.style.background='#1a0d0d';el.style.color='#ff7b72';el.style.borderColor='#8e2b31';el.textContent='WS: 未收到数据'}}catch(e){}}
-(async()=>{try{const r=await fetch('/api/params');const d=await r.json();populate(d.current)}catch(e){msg('加载参数失败',false)}loadLogs();loadKeys();loadSymbol();loadStatus();loadMarket();setInterval(loadLogs,3000);setInterval(loadSymbol,10000);setInterval(loadStatus,2000);setInterval(loadMarket,800)})();
+(async()=>{try{const r=await fetch('/api/params');const d=await r.json();populate(d.current)}catch(e){msg('加载参数失败',false)}loadLogs();loadKeys();loadSymbol();loadStatus();loadMarket();setInterval(loadLogs,3000);setInterval(loadSymbol,10000);setInterval(loadStatus,2000);setInterval(loadMarket,800);})();
 </script>
 </body>
 </html>`

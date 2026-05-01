@@ -40,6 +40,10 @@ func (l *EventLog) AddReject(eventType, message string, fields map[string]interf
 	l.AddCategory("reject", eventType, message, fields)
 }
 
+func (l *EventLog) AddOperation(eventType, message string, fields map[string]interface{}) {
+	l.AddCategory("operation", eventType, message, fields)
+}
+
 func (l *EventLog) AddCategory(category, eventType, message string, fields map[string]interface{}) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

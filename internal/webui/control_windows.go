@@ -30,7 +30,7 @@ func (s *Server) runServiceControl(action string) (string, error) {
 	}
 	cmdDesc := fmt.Sprintf("sc %s %s", scAction, s.serviceName)
 	if err := exec.Command("sc", scAction, s.serviceName).Run(); err != nil {
-		return cmdDesc, fmt.Errorf("%s 失败（错误：%w）\n请确认：①以管理员权限运行；②服务 '%s' 已通过 sc create 安装为 Windows 服务；③若直接运行 .exe 无需使用此按钮", err, scAction, s.serviceName)
+		return cmdDesc, fmt.Errorf("%s 失败（错误：%w）\n请确认：①以管理员权限运行；②服务 '%s' 已通过 sc create 安装为 Windows 服务；③若直接运行 .exe 无需使用此按钮", scAction, err, s.serviceName)
 	}
 	return cmdDesc, nil
 }

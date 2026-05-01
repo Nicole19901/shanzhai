@@ -252,21 +252,83 @@ func (c *RESTClient) PlaceOrder(ctx context.Context, req OrderRequest) (*OrderRe
 	}, nil
 }
 
+// SymbolInfo holds Binance exchange precision rules for a symbol.
+type SymbolInfo struct {
+	StepSize decimal.Decimal // qty step size (e.g. 0.001 for ETHUSDT)
+	QtyPrec  int             // decimal places for quantity
+}
+
+// symbolInfoCache caches SymbolInfo per symbol to avoid repeated API calls.
+var symbolInfoCache sync.Map // map[string]SymbolInfo
+
+// exchangeInfoRaw is the parsed structure for /fapi/v1/exchangeInfo.
+type exchangeInfoRaw struct {
+	Symbols []struct {
+		Symbol  string `json:"symbol"`
+		Status  string `json:"status"`
+		Filters []struct {
+			FilterType string `json:"filterType"`
+			StepSize   string `json:"stepSize"`
+		} `json:"filters"`
+	} `json:"symbols"`
+}
+
+// loadExchangeInfoCache fetches /fapi/v1/exchangeInfo and populates symbolInfoCache for all symbols.
+func (c *RESTClient) loadExchangeInfoCache(ctx context.Context) (*exchangeInfoRaw, error) {
+	resp, err := c.get(ctx, "/fapi/v1/exchangeInfo", nil)
+	if err != nil {
+		return nil, fmt.Errorf("exchangeInfo fetch failed: %w", err)
+	}
+	var result exchangeInfoRaw
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, fmt.Errorf("exchangeInfo parse failed: %w", err)
+	}
+	for _, s := range result.Symbols {
+		for _, f := range s.Filters {
+			if f.FilterType == "LOT_SIZE" && f.StepSize != "" {
+				step, err := decimal.NewFromString(f.StepSize)
+				if err != nil || step.IsZero() {
+					break
+				}
+				prec := countDecimalPlaces(f.StepSize)
+				symbolInfoCache.Store(s.Symbol, SymbolInfo{StepSize: step, QtyPrec: prec})
+				break
+			}
+		}
+	}
+	return &result, nil
+}
+
+// countDecimalPlaces counts the number of decimal places in a string like "0.001".
+func countDecimalPlaces(s string) int {
+	for i, c := range s {
+		if c == '.' {
+			return len(s) - i - 1
+		}
+	}
+	return 0
+}
+
+// GetSymbolInfo returns cached SymbolInfo for symbol, fetching exchangeInfo if not cached.
+func (c *RESTClient) GetSymbolInfo(ctx context.Context, symbol string) (SymbolInfo, error) {
+	if v, ok := symbolInfoCache.Load(symbol); ok {
+		return v.(SymbolInfo), nil
+	}
+	if _, err := c.loadExchangeInfoCache(ctx); err != nil {
+		return SymbolInfo{}, err
+	}
+	if v, ok := symbolInfoCache.Load(symbol); ok {
+		return v.(SymbolInfo), nil
+	}
+	return SymbolInfo{}, fmt.Errorf("symbol %s not found in exchangeInfo", symbol)
+}
+
 // ValidateSymbol 检查币对是否在币安合约市场存在且状态为 TRADING（无需签名）。
 // 使用 exchangeInfo 而非 ticker/price，后者对无流量合约也可能返回旧价格导致误判。
 func (c *RESTClient) ValidateSymbol(ctx context.Context, symbol string) (bool, error) {
-	resp, err := c.get(ctx, "/fapi/v1/exchangeInfo", nil)
+	result, err := c.loadExchangeInfoCache(ctx)
 	if err != nil {
-		return false, fmt.Errorf("exchangeInfo fetch failed: %w", err)
-	}
-	var result struct {
-		Symbols []struct {
-			Symbol string `json:"symbol"`
-			Status string `json:"status"`
-		} `json:"symbols"`
-	}
-	if err := json.Unmarshal(resp, &result); err != nil {
-		return false, fmt.Errorf("exchangeInfo parse failed: %w", err)
+		return false, err
 	}
 	for _, s := range result.Symbols {
 		if s.Symbol == symbol {

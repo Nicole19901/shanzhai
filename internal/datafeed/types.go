@@ -91,6 +91,9 @@ type MarketContext struct {
 
 	OrderbookSurvivalDecay decimal.Decimal // 0~1
 	SpreadWideningRate     decimal.Decimal
+	SpreadBps              decimal.Decimal // 当前买卖价差 bps
+	TotalBidDepth          decimal.Decimal // 买侧总深度
+	TotalAskDepth          decimal.Decimal // 卖侧总深度
 
 	// vol
 	RealizedVol1m decimal.Decimal

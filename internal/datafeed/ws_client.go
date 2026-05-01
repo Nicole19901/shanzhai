@@ -15,7 +15,7 @@ import (
 
 const (
 	pingInterval = 30 * time.Second
-	maxStreams   = 5
+	maxStreams   = 200
 	backoffBase  = time.Second
 	backoffMax   = 30 * time.Second
 )

@@ -42,11 +42,22 @@ func (om *OrderManager) HasCredentials() bool {
 	return om.rest.HasCredentials()
 }
 
+// quantizeQty rounds qty down to the nearest step size.
+func quantizeQty(qty, step decimal.Decimal) decimal.Decimal {
+	if step.IsZero() {
+		return qty
+	}
+	return qty.Div(step).Floor().Mul(step)
+}
+
 // OpenMarket 市价开仓，返回成交均价
 func (om *OrderManager) OpenMarket(ctx context.Context, dir datafeed.Direction, qty decimal.Decimal) (decimal.Decimal, string, error) {
 	if !om.HasCredentials() {
 		om.metrics.OrderSubmitted("MARKET_OPEN", "failed")
 		return decimal.Zero, "", fmt.Errorf("open market order: missing Binance API credentials")
+	}
+	if info, err := om.rest.GetSymbolInfo(ctx, om.currentSymbol()); err == nil && !info.StepSize.IsZero() {
+		qty = quantizeQty(qty, info.StepSize)
 	}
 	side := "BUY"
 	if dir == datafeed.DirectionShort {
@@ -81,6 +92,9 @@ func (om *OrderManager) PlaceStopLoss(ctx context.Context, dir datafeed.Directio
 		om.metrics.OrderSubmitted("STOP_MARKET", "failed")
 		return "", fmt.Errorf("place stop loss: missing Binance API credentials")
 	}
+	if info, err := om.rest.GetSymbolInfo(ctx, om.currentSymbol()); err == nil && !info.StepSize.IsZero() {
+		qty = quantizeQty(qty, info.StepSize)
+	}
 	side := "SELL"
 	if dir == datafeed.DirectionShort {
 		side = "BUY"
@@ -114,6 +128,9 @@ func (om *OrderManager) PlaceTakeProfit(ctx context.Context, dir datafeed.Direct
 		om.metrics.OrderSubmitted("TP_MARKET", "failed")
 		return "", fmt.Errorf("place take profit: missing Binance API credentials")
 	}
+	if info, err := om.rest.GetSymbolInfo(ctx, om.currentSymbol()); err == nil && !info.StepSize.IsZero() {
+		qty = quantizeQty(qty, info.StepSize)
+	}
 	side := "SELL"
 	if dir == datafeed.DirectionShort {
 		side = "BUY"
@@ -146,6 +163,9 @@ func (om *OrderManager) CloseMarket(ctx context.Context, dir datafeed.Direction,
 	if !om.HasCredentials() {
 		om.metrics.OrderSubmitted("MARKET_CLOSE", "failed")
 		return decimal.Zero, fmt.Errorf("close market: missing Binance API credentials")
+	}
+	if info, err := om.rest.GetSymbolInfo(ctx, om.currentSymbol()); err == nil && !info.StepSize.IsZero() {
+		qty = quantizeQty(qty, info.StepSize)
 	}
 	side := "SELL"
 	if dir == datafeed.DirectionShort {
