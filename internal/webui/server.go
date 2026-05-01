@@ -961,11 +961,6 @@ const adminHTML = `<!DOCTYPE html>
     <div class="mkt-row"><span class="mkt-label">价差扩张率</span><span class="mkt-val" id="vv_spread">--</span></div>
   </div>
 </div>
-<!-- 引擎信号状态 -->
-<div id="engSection" style="display:none;margin-top:8px">
-  <div class="mkt-group-title" style="margin-bottom:6px">引擎信号（置信度 / 阈值）</div>
-  <div class="eng-grid" id="engGrid"></div>
-</div>
 </div>
 
 <!-- 信号平仓模式说明 + 开关 -->
@@ -1007,8 +1002,12 @@ const adminHTML = `<!DOCTYPE html>
 </div>
 </div>
 
-<!-- 参数表单（单列紧凑布局） -->
-<form id="form" style="max-width:700px"><div id="grid" style="display:flex;flex-direction:column;gap:8px"></div><div class="actions"><button class="btn-save" type="submit">保存参数</button><button class="btn-restart" type="button" id="testParamsBtn">测试参数</button><button class="btn-init" type="button" id="initBtn">初始化</button><button class="btn-reset" type="button" id="resetBtn">恢复默认</button><button class="btn-start" type="button" id="startBtn">启动服务</button><button class="btn-restart" type="button" id="restartBtn">重启服务</button><button class="btn-stop" type="button" id="stopBtn">停止服务</button></div><div id="msg" class="msg"></div></form>
+<!-- 参数表单 + 引擎信号并排 -->
+<div style="display:flex;gap:12px;align-items:flex-start">
+<form id="form" style="flex:1;min-width:0"><div id="grid" style="display:flex;flex-direction:column;gap:8px"></div><div class="actions"><button class="btn-save" type="submit">保存参数</button><button class="btn-restart" type="button" id="testParamsBtn">测试参数</button><button class="btn-init" type="button" id="initBtn">初始化</button><button class="btn-reset" type="button" id="resetBtn">恢复默认</button><button class="btn-start" type="button" id="startBtn">启动服务</button><button class="btn-restart" type="button" id="restartBtn">重启服务</button><button class="btn-stop" type="button" id="stopBtn">停止服务</button></div><div id="msg" class="msg"></div></form>
+<!-- 引擎信号（参数调节右侧） -->
+<div id="engSection" style="display:none;width:270px;flex-shrink:0"><div class="card" style="margin-bottom:0;padding:10px"><h2>引擎信号</h2><div class="eng-grid" style="grid-template-columns:1fr" id="engGrid"></div></div></div>
+</div>
 
 <div class="grid2" style="margin-top:10px">
 <section class="card"><h2>交易对切换</h2><div style="display:flex;gap:6px;align-items:flex-end;flex-wrap:wrap"><div class="field" style="flex:1;min-width:140px;margin:0"><label for="symbolInput">输入币种，如 ETH 或 ETHUSDT</label><input id="symbolInput" type="text" placeholder="ETHUSDT" autocomplete="off" spellcheck="false"></div><button class="btn-verify" type="button" id="validateSymbolBtn">验证</button><button class="btn-apply" type="button" id="applySymbolBtn" disabled>切换</button></div><div class="field" style="margin-top:6px"><label for="symbolConfirm">防误触确认：再次输入完整交易对</label><input id="symbolConfirm" type="text" placeholder="ETHUSDT" autocomplete="off" spellcheck="false"></div><div id="symbolResult" class="muted" style="margin-top:6px"></div><div class="muted" style="margin-top:4px">有持仓时拒绝切换；切换后数据流、OI、下单均跟随新交易对。</div>

@@ -70,8 +70,7 @@ func (r *ReconciliationLoop) Run(ctx context.Context) {
 
 func (r *ReconciliationLoop) reconcile(ctx context.Context) {
 	if !r.rest.HasCredentials() {
-		log.Debug().Msg("reconciliation skipped: missing Binance API credentials")
-		return
+		return // 无凭证时静默跳过，属正常等待状态
 	}
 	symbol := r.currentSymbol()
 	risks, err := r.rest.PositionRisk(ctx, symbol)
