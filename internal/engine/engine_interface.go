@@ -9,9 +9,10 @@ import (
 type EngineType string
 
 const (
-	EngineTrend      EngineType = "TREND"
-	EngineSqueeze    EngineType = "SQUEEZE"
-	EngineTransition EngineType = "TRANSITION"
+	EngineTrend       EngineType = "TREND"
+	EngineSqueeze     EngineType = "SQUEEZE"
+	EngineTransition  EngineType = "TRANSITION"
+	EngineLiquidation EngineType = "LIQUIDATION"
 )
 
 type Signal struct {

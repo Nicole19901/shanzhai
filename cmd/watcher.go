@@ -413,7 +413,8 @@ func (w *SymbolWatcher) runEngineEvaluator(ctx context.Context, state *symState)
 	trendEng := engine.NewTrendEngine(w.cfg.Engines.Trend)
 	squeezeEng := engine.NewSqueezeEngine(w.cfg.Engines.Squeeze)
 	transEng := engine.NewTransitionEngine(w.cfg.Engines.Transition)
-	engines := []engine.Engine{trendEng, squeezeEng, transEng}
+	liqEng := engine.NewLiquidationEngine(w.cfg.Engines.Liquidation)
+	engines := []engine.Engine{trendEng, squeezeEng, transEng, liqEng}
 
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
@@ -520,11 +521,17 @@ func (w *SymbolWatcher) runEngineEvaluator(ctx context.Context, state *symState)
 		trendEng.SetConfig(lp.TrendEnabled != nil && *lp.TrendEnabled, trendMin, lp.OIDeltaThreshold)
 		squeezeEng.SetConfig(lp.SqueezeEnabled != nil && *lp.SqueezeEnabled, squeezeMin, lp.BasisZScoreThreshold)
 		transEng.SetConfig(lp.TransitionEnabled != nil && *lp.TransitionEnabled, transMin, lp.VolCompressionRatio)
+		liqMin := lp.LiquidationLongConf
+		if lp.LiquidationShortConf < liqMin {
+			liqMin = lp.LiquidationShortConf
+		}
+		liqEng.SetConfig(lp.LiquidationEnabled != nil && *lp.LiquidationEnabled, liqMin, lp.OILiquidationThreshold)
 
 		engThresholds := map[engine.EngineType]float64{
-			engine.EngineTrend:      trendMin,
-			engine.EngineSqueeze:    squeezeMin,
-			engine.EngineTransition: transMin,
+			engine.EngineTrend:       trendMin,
+			engine.EngineSqueeze:     squeezeMin,
+			engine.EngineTransition:  transMin,
+			engine.EngineLiquidation: liqMin,
 		}
 
 		// Evaluate engines: build visual snapshots and fire signal hook on first valid signal.
@@ -546,6 +553,8 @@ func (w *SymbolWatcher) runEngineEvaluator(ctx context.Context, state *symState)
 					if rawSig.Direction == datafeed.DirectionLong { dirThresh = lp.SqueezeLongConfidence } else { dirThresh = lp.SqueezeShortConfidence }
 				case engine.EngineTransition:
 					if rawSig.Direction == datafeed.DirectionLong { dirThresh = lp.TransitionLongConfidence } else { dirThresh = lp.TransitionShortConfidence }
+				case engine.EngineLiquidation:
+					if rawSig.Direction == datafeed.DirectionLong { dirThresh = lp.LiquidationLongConf } else { dirThresh = lp.LiquidationShortConf }
 				}
 				if rawSig.Confidence < dirThresh {
 					rawSig = nil

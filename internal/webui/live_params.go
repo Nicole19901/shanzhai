@@ -64,6 +64,15 @@ type LiveParams struct {
 	LongEnabled  bool // 允许开多（引擎信号为 LONG 时是否执行）
 	ShortEnabled bool // 允许开空（引擎信号为 SHORT 时是否执行）
 
+	// ── 踩踏/逼空引擎 ────────────────────────────────────
+	LiquidationEnabled     bool
+	LiquidationLongConf    float64
+	LiquidationShortConf   float64
+	OILiquidationThreshold float64 // OI 30s 变化率阈值
+
+	// ── 保证金模式 ───────────────────────────────────────
+	MarginMode string // "ISOLATED"(逐仓) or "CROSS"(全仓)
+
 	// 初始默认值（只读，Init 时固定）
 	defaults LiveParamsSnapshot
 }
@@ -112,6 +121,13 @@ type LiveParamsSnapshot struct {
 	SignalBasedExit      bool    `json:"signal_based_exit"`
 	LongEnabled          *bool   `json:"long_enabled,omitempty"`
 	ShortEnabled         *bool   `json:"short_enabled,omitempty"`
+
+	LiquidationEnabled     *bool   `json:"liquidation_enabled,omitempty"`
+	LiquidationLongConf    float64 `json:"liquidation_long_confidence"`
+	LiquidationShortConf   float64 `json:"liquidation_short_confidence"`
+	OILiquidationThreshold float64 `json:"oi_liquidation_threshold"`
+
+	MarginMode string `json:"margin_mode"` // "ISOLATED" or "CROSS"
 }
 
 func boolPtr(b bool) *bool { return &b }
@@ -152,9 +168,20 @@ func NewLiveParams(cfg *config.Config) *LiveParams {
 		DailyLossLimitPct:    cfg.Risk.DailyLossLimitPct,
 		ConsecutiveLossLimit: cfg.Risk.ConsecutiveLossLimit,
 		DepthLevels:          5,
-		QuantityPrecision:    6, // 默认6，适用于 ETH 等主流币；小币种（quantityPrecision=0）改为 0
+		QuantityPrecision:    6, // 默认6，适用于 ETH 等主流币；小币种改为 0
 		LongEnabled:          boolPtr(true),
 		ShortEnabled:         boolPtr(true),
+
+		LiquidationEnabled:     boolPtr(cfg.Engines.Liquidation.Enabled),
+		LiquidationLongConf:    cfg.Engines.Liquidation.ConfidenceThreshold,
+		LiquidationShortConf:   cfg.Engines.Liquidation.ConfidenceThreshold,
+		OILiquidationThreshold: func() float64 {
+			if cfg.Engines.Liquidation.OIThreshold > 0 {
+				return cfg.Engines.Liquidation.OIThreshold
+			}
+			return 0.003 // 默认 0.3%
+		}(),
+		MarginMode: cfg.Trading.MarginType,
 	}
 	lp := &LiveParams{defaults: snap}
 	lp.apply(snap)
@@ -233,6 +260,12 @@ func (lp *LiveParams) snapshotLocked() LiveParamsSnapshot {
 		SignalBasedExit:      lp.SignalBasedExit,
 		LongEnabled:          boolPtr(lp.LongEnabled),
 		ShortEnabled:         boolPtr(lp.ShortEnabled),
+
+		LiquidationEnabled:     boolPtr(lp.LiquidationEnabled),
+		LiquidationLongConf:    lp.LiquidationLongConf,
+		LiquidationShortConf:   lp.LiquidationShortConf,
+		OILiquidationThreshold: lp.OILiquidationThreshold,
+		MarginMode:             lp.MarginMode,
 	}
 }
 
@@ -323,5 +356,21 @@ func (lp *LiveParams) apply(s LiveParamsSnapshot) {
 	}
 	if s.ShortEnabled != nil {
 		lp.ShortEnabled = *s.ShortEnabled
+	}
+
+	if s.LiquidationEnabled != nil {
+		lp.LiquidationEnabled = *s.LiquidationEnabled
+	}
+	if s.LiquidationLongConf > 0 {
+		lp.LiquidationLongConf = s.LiquidationLongConf
+	}
+	if s.LiquidationShortConf > 0 {
+		lp.LiquidationShortConf = s.LiquidationShortConf
+	}
+	if s.OILiquidationThreshold > 0 {
+		lp.OILiquidationThreshold = s.OILiquidationThreshold
+	}
+	if s.MarginMode == "ISOLATED" || s.MarginMode == "CROSS" {
+		lp.MarginMode = s.MarginMode
 	}
 }

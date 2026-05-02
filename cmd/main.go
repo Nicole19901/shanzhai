@@ -178,7 +178,11 @@ func main() {
 			if err := rest.SetLeverage(addCtx, sym, lp.Get().Leverage); err != nil {
 				log.Warn().Err(err).Str("sym", sym).Msg("set leverage failed (non-fatal)")
 			}
-			if err := rest.SetMarginType(addCtx, sym, cfg.Trading.MarginType); err != nil {
+			marginMode := lp.Get().MarginMode
+			if marginMode == "" {
+				marginMode = cfg.Trading.MarginType
+			}
+			if err := rest.SetMarginType(addCtx, sym, marginMode); err != nil {
 				log.Warn().Err(err).Str("sym", sym).Msg("set margin type failed (non-fatal)")
 			}
 			if err := watcher.Add(addCtx, sym); err != nil {

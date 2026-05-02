@@ -39,9 +39,16 @@ type ExitsConfig struct {
 }
 
 type EnginesConfig struct {
-	Trend      TrendEngineConfig      `mapstructure:"trend"`
-	Squeeze    SqueezeEngineConfig    `mapstructure:"squeeze"`
-	Transition TransitionEngineConfig `mapstructure:"transition"`
+	Trend       TrendEngineConfig       `mapstructure:"trend"`
+	Squeeze     SqueezeEngineConfig     `mapstructure:"squeeze"`
+	Transition  TransitionEngineConfig  `mapstructure:"transition"`
+	Liquidation LiquidationEngineConfig `mapstructure:"liquidation"`
+}
+
+type LiquidationEngineConfig struct {
+	Enabled             bool    `mapstructure:"enabled"`
+	ConfidenceThreshold float64 `mapstructure:"confidence_threshold"`
+	OIThreshold         float64 `mapstructure:"oi_threshold"` // OI 30s 变化率阈值，默认 0.003 (0.3%)
 }
 
 type TrendEngineConfig struct {
@@ -156,8 +163,8 @@ func validate(cfg *Config) error {
 	if cfg.Trading.Leverage < 1 || cfg.Trading.Leverage > 10 {
 		return fmt.Errorf("leverage must be in [1, 10], got %d", cfg.Trading.Leverage)
 	}
-	if cfg.Trading.MarginType != "ISOLATED" {
-		return fmt.Errorf("margin_type must be ISOLATED, got %s", cfg.Trading.MarginType)
+	if cfg.Trading.MarginType != "ISOLATED" && cfg.Trading.MarginType != "CROSS" {
+		return fmt.Errorf("margin_type must be ISOLATED or CROSS, got %s", cfg.Trading.MarginType)
 	}
 	if cfg.Trading.LotSize.IsZero() || cfg.Trading.LotSize.IsNegative() {
 		return fmt.Errorf("lot_size must be > 0")
