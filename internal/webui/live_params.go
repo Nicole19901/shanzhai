@@ -88,17 +88,17 @@ type LiveParamsSnapshot struct {
 	MakerOffsetBps  float64 `json:"maker_offset_bps"`
 	GuardDeadlineMs int64   `json:"guard_deadline_ms"`
 
-	TrendEnabled              bool    `json:"trend_enabled"`
+	TrendEnabled              *bool   `json:"trend_enabled,omitempty"`
 	TrendLongConfidence       float64 `json:"trend_long_confidence"`
 	TrendShortConfidence      float64 `json:"trend_short_confidence"`
 	OIDeltaThreshold          float64 `json:"oi_delta_threshold"`
 
-	SqueezeEnabled            bool    `json:"squeeze_enabled"`
+	SqueezeEnabled            *bool   `json:"squeeze_enabled,omitempty"`
 	SqueezeLongConfidence     float64 `json:"squeeze_long_confidence"`
 	SqueezeShortConfidence    float64 `json:"squeeze_short_confidence"`
 	BasisZScoreThreshold      float64 `json:"basis_zscore_threshold"`
 
-	TransitionEnabled          bool    `json:"transition_enabled"`
+	TransitionEnabled          *bool   `json:"transition_enabled,omitempty"`
 	TransitionLongConfidence   float64 `json:"transition_long_confidence"`
 	TransitionShortConfidence  float64 `json:"transition_short_confidence"`
 	VolCompressionRatio        float64 `json:"vol_compression_ratio"`
@@ -108,9 +108,11 @@ type LiveParamsSnapshot struct {
 	ConsecutiveLossLimit int     `json:"consecutive_loss_limit"`
 	DepthLevels          int     `json:"depth_levels"`
 	SignalBasedExit      bool    `json:"signal_based_exit"`
-	LongEnabled          bool    `json:"long_enabled"`
-	ShortEnabled         bool    `json:"short_enabled"`
+	LongEnabled          *bool   `json:"long_enabled,omitempty"`
+	ShortEnabled         *bool   `json:"short_enabled,omitempty"`
 }
+
+func boolPtr(b bool) *bool { return &b }
 
 func NewLiveParams(cfg *config.Config) *LiveParams {
 	snap := LiveParamsSnapshot{
@@ -129,17 +131,17 @@ func NewLiveParams(cfg *config.Config) *LiveParams {
 		MakerOffsetBps:  2.0, // 默认 2bps 偏移
 		GuardDeadlineMs: 150, // 默认 150ms（规范要求 <200ms）
 
-		TrendEnabled:             cfg.Engines.Trend.Enabled,
+		TrendEnabled:             boolPtr(cfg.Engines.Trend.Enabled),
 		TrendLongConfidence:      cfg.Engines.Trend.ConfidenceThreshold,
 		TrendShortConfidence:     cfg.Engines.Trend.ConfidenceThreshold,
 		OIDeltaThreshold:         cfg.Engines.Trend.OIDeltaThreshold,
 
-		SqueezeEnabled:           cfg.Engines.Squeeze.Enabled,
+		SqueezeEnabled:           boolPtr(cfg.Engines.Squeeze.Enabled),
 		SqueezeLongConfidence:    cfg.Engines.Squeeze.ConfidenceThreshold,
 		SqueezeShortConfidence:   cfg.Engines.Squeeze.ConfidenceThreshold,
 		BasisZScoreThreshold:     cfg.Engines.Squeeze.BasisZScoreThreshold,
 
-		TransitionEnabled:         cfg.Engines.Transition.Enabled,
+		TransitionEnabled:         boolPtr(cfg.Engines.Transition.Enabled),
 		TransitionLongConfidence:  cfg.Engines.Transition.ConfidenceThreshold,
 		TransitionShortConfidence: cfg.Engines.Transition.ConfidenceThreshold,
 		VolCompressionRatio:       cfg.Engines.Transition.VolCompressionRatio,
@@ -148,8 +150,8 @@ func NewLiveParams(cfg *config.Config) *LiveParams {
 		DailyLossLimitPct:    cfg.Risk.DailyLossLimitPct,
 		ConsecutiveLossLimit: cfg.Risk.ConsecutiveLossLimit,
 		DepthLevels:          5,
-		LongEnabled:          true,
-		ShortEnabled:         true,
+		LongEnabled:          boolPtr(true),
+		ShortEnabled:         boolPtr(true),
 	}
 	lp := &LiveParams{defaults: snap}
 	lp.apply(snap)
@@ -205,17 +207,17 @@ func (lp *LiveParams) snapshotLocked() LiveParamsSnapshot {
 		MakerOffsetBps:  lp.MakerOffsetBps,
 		GuardDeadlineMs: lp.GuardDeadlineMs,
 
-		TrendEnabled:             lp.TrendEnabled,
+		TrendEnabled:             boolPtr(lp.TrendEnabled),
 		TrendLongConfidence:      lp.TrendLongConfidence,
 		TrendShortConfidence:     lp.TrendShortConfidence,
 		OIDeltaThreshold:         lp.OIDeltaThreshold,
 
-		SqueezeEnabled:           lp.SqueezeEnabled,
+		SqueezeEnabled:           boolPtr(lp.SqueezeEnabled),
 		SqueezeLongConfidence:    lp.SqueezeLongConfidence,
 		SqueezeShortConfidence:   lp.SqueezeShortConfidence,
 		BasisZScoreThreshold:     lp.BasisZScoreThreshold,
 
-		TransitionEnabled:         lp.TransitionEnabled,
+		TransitionEnabled:         boolPtr(lp.TransitionEnabled),
 		TransitionLongConfidence:  lp.TransitionLongConfidence,
 		TransitionShortConfidence: lp.TransitionShortConfidence,
 		VolCompressionRatio:       lp.VolCompressionRatio,
@@ -225,23 +227,26 @@ func (lp *LiveParams) snapshotLocked() LiveParamsSnapshot {
 		ConsecutiveLossLimit: lp.ConsecutiveLossLimit,
 		DepthLevels:          lp.DepthLevels,
 		SignalBasedExit:      lp.SignalBasedExit,
-		LongEnabled:          lp.LongEnabled,
-		ShortEnabled:         lp.ShortEnabled,
+		LongEnabled:          boolPtr(lp.LongEnabled),
+		ShortEnabled:         boolPtr(lp.ShortEnabled),
 	}
 }
 
 func (lp *LiveParams) apply(s LiveParamsSnapshot) {
-	// 多空独立 TP/SL；若字段为 0 则回退到兼容旧字段
-	setOrFallback := func(v, fallback float64) float64 {
+	// 多空独立 TP/SL；若字段为 0 则回退到兼容旧字段，再回退到当前值（防止静默清零）
+	setOrFallback := func(v, fallback, current float64) float64 {
 		if v > 0 {
 			return v
 		}
-		return fallback
+		if fallback > 0 {
+			return fallback
+		}
+		return current
 	}
-	lp.LongTPPct = setOrFallback(s.LongTPPct, s.TakeProfitPct)
-	lp.LongSLPct = setOrFallback(s.LongSLPct, s.StopLossPct)
-	lp.ShortTPPct = setOrFallback(s.ShortTPPct, s.TakeProfitPct)
-	lp.ShortSLPct = setOrFallback(s.ShortSLPct, s.StopLossPct)
+	lp.LongTPPct = setOrFallback(s.LongTPPct, s.TakeProfitPct, lp.LongTPPct)
+	lp.LongSLPct = setOrFallback(s.LongSLPct, s.StopLossPct, lp.LongSLPct)
+	lp.ShortTPPct = setOrFallback(s.ShortTPPct, s.TakeProfitPct, lp.ShortTPPct)
+	lp.ShortSLPct = setOrFallback(s.ShortSLPct, s.StopLossPct, lp.ShortSLPct)
 	// 兼容字段也同步（供旧代码引用）
 	lp.TakeProfitPct = lp.LongTPPct
 	lp.StopLossPct = lp.LongSLPct
@@ -270,17 +275,23 @@ func (lp *LiveParams) apply(s LiveParamsSnapshot) {
 	}
 	lp.GuardDeadlineMs = s.GuardDeadlineMs
 
-	lp.TrendEnabled = s.TrendEnabled
+	if s.TrendEnabled != nil {
+		lp.TrendEnabled = *s.TrendEnabled
+	}
 	lp.TrendLongConfidence = s.TrendLongConfidence
 	lp.TrendShortConfidence = s.TrendShortConfidence
 	lp.OIDeltaThreshold = s.OIDeltaThreshold
 
-	lp.SqueezeEnabled = s.SqueezeEnabled
+	if s.SqueezeEnabled != nil {
+		lp.SqueezeEnabled = *s.SqueezeEnabled
+	}
 	lp.SqueezeLongConfidence = s.SqueezeLongConfidence
 	lp.SqueezeShortConfidence = s.SqueezeShortConfidence
 	lp.BasisZScoreThreshold = s.BasisZScoreThreshold
 
-	lp.TransitionEnabled = s.TransitionEnabled
+	if s.TransitionEnabled != nil {
+		lp.TransitionEnabled = *s.TransitionEnabled
+	}
 	lp.TransitionLongConfidence = s.TransitionLongConfidence
 	lp.TransitionShortConfidence = s.TransitionShortConfidence
 	lp.VolCompressionRatio = s.VolCompressionRatio
@@ -296,6 +307,10 @@ func (lp *LiveParams) apply(s LiveParamsSnapshot) {
 	}
 	lp.DepthLevels = s.DepthLevels
 	lp.SignalBasedExit = s.SignalBasedExit
-	lp.LongEnabled = s.LongEnabled
-	lp.ShortEnabled = s.ShortEnabled
+	if s.LongEnabled != nil {
+		lp.LongEnabled = *s.LongEnabled
+	}
+	if s.ShortEnabled != nil {
+		lp.ShortEnabled = *s.ShortEnabled
+	}
 }

@@ -755,6 +755,16 @@ func paramsDiff(old, next LiveParamsSnapshot) []string {
 		}
 		return "关"
 	}
+	db := func(p *bool) bool { return p != nil && *p }
+	boolPtrChanged := func(a, b *bool) bool {
+		if a == nil && b == nil {
+			return false
+		}
+		if a == nil || b == nil {
+			return true
+		}
+		return *a != *b
+	}
 	if old.Leverage != next.Leverage {
 		d = append(d, fmt.Sprintf("杠杆 %dx→%dx", old.Leverage, next.Leverage))
 	}
@@ -773,20 +783,20 @@ func paramsDiff(old, next LiveParamsSnapshot) []string {
 	if old.ShortSLPct != next.ShortSLPct {
 		d = append(d, fmt.Sprintf("空止损 %.2f%%→%.2f%%", old.ShortSLPct*100, next.ShortSLPct*100))
 	}
-	if old.LongEnabled != next.LongEnabled {
-		d = append(d, fmt.Sprintf("做多 %s→%s", b2s(old.LongEnabled), b2s(next.LongEnabled)))
+	if boolPtrChanged(old.LongEnabled, next.LongEnabled) {
+		d = append(d, fmt.Sprintf("做多 %s→%s", b2s(db(old.LongEnabled)), b2s(db(next.LongEnabled))))
 	}
-	if old.ShortEnabled != next.ShortEnabled {
-		d = append(d, fmt.Sprintf("做空 %s→%s", b2s(old.ShortEnabled), b2s(next.ShortEnabled)))
+	if boolPtrChanged(old.ShortEnabled, next.ShortEnabled) {
+		d = append(d, fmt.Sprintf("做空 %s→%s", b2s(db(old.ShortEnabled)), b2s(db(next.ShortEnabled))))
 	}
-	if old.TrendEnabled != next.TrendEnabled {
-		d = append(d, fmt.Sprintf("趋势引擎 %s→%s", b2s(old.TrendEnabled), b2s(next.TrendEnabled)))
+	if boolPtrChanged(old.TrendEnabled, next.TrendEnabled) {
+		d = append(d, fmt.Sprintf("趋势引擎 %s→%s", b2s(db(old.TrendEnabled)), b2s(db(next.TrendEnabled))))
 	}
-	if old.SqueezeEnabled != next.SqueezeEnabled {
-		d = append(d, fmt.Sprintf("Squeeze引擎 %s→%s", b2s(old.SqueezeEnabled), b2s(next.SqueezeEnabled)))
+	if boolPtrChanged(old.SqueezeEnabled, next.SqueezeEnabled) {
+		d = append(d, fmt.Sprintf("Squeeze引擎 %s→%s", b2s(db(old.SqueezeEnabled)), b2s(db(next.SqueezeEnabled))))
 	}
-	if old.TransitionEnabled != next.TransitionEnabled {
-		d = append(d, fmt.Sprintf("Transition引擎 %s→%s", b2s(old.TransitionEnabled), b2s(next.TransitionEnabled)))
+	if boolPtrChanged(old.TransitionEnabled, next.TransitionEnabled) {
+		d = append(d, fmt.Sprintf("Transition引擎 %s→%s", b2s(db(old.TransitionEnabled)), b2s(db(next.TransitionEnabled))))
 	}
 	if old.SignalBasedExit != next.SignalBasedExit {
 		d = append(d, fmt.Sprintf("信号平仓 %s→%s", b2s(old.SignalBasedExit), b2s(next.SignalBasedExit)))

@@ -513,9 +513,9 @@ func (w *SymbolWatcher) runEngineEvaluator(ctx context.Context, state *symState)
 		if lp.SqueezeShortConfidence < squeezeMin { squeezeMin = lp.SqueezeShortConfidence }
 		transMin := lp.TransitionLongConfidence
 		if lp.TransitionShortConfidence < transMin { transMin = lp.TransitionShortConfidence }
-		trendEng.SetConfig(lp.TrendEnabled, trendMin, lp.OIDeltaThreshold)
-		squeezeEng.SetConfig(lp.SqueezeEnabled, squeezeMin, lp.BasisZScoreThreshold)
-		transEng.SetConfig(lp.TransitionEnabled, transMin, lp.VolCompressionRatio)
+		trendEng.SetConfig(lp.TrendEnabled != nil && *lp.TrendEnabled, trendMin, lp.OIDeltaThreshold)
+		squeezeEng.SetConfig(lp.SqueezeEnabled != nil && *lp.SqueezeEnabled, squeezeMin, lp.BasisZScoreThreshold)
+		transEng.SetConfig(lp.TransitionEnabled != nil && *lp.TransitionEnabled, transMin, lp.VolCompressionRatio)
 
 		engThresholds := map[engine.EngineType]float64{
 			engine.EngineTrend:      trendMin,

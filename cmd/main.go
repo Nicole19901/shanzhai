@@ -152,10 +152,10 @@ func main() {
 		}
 
 		lp := liveParams.Get()
-		if sig.Direction == datafeed.DirectionLong && !lp.LongEnabled {
+		if sig.Direction == datafeed.DirectionLong && (lp.LongEnabled == nil || !*lp.LongEnabled) {
 			return
 		}
-		if sig.Direction == datafeed.DirectionShort && !lp.ShortEnabled {
+		if sig.Direction == datafeed.DirectionShort && (lp.ShortEnabled == nil || !*lp.ShortEnabled) {
 			return
 		}
 
