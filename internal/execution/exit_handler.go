@@ -106,6 +106,25 @@ func (h *TradeHandler) TryOpen(ctx context.Context, sig *engine.Signal) {
 		h.addReject("OPEN_REJECTED", "missing Binance API credentials", nil)
 		return
 	}
+	// Step 3b: 风控 + 方向开关（TryOpen 内置检查，防止 signalHook 之外的调用路径绕过）
+	if !h.guard.CanTrade() {
+		log.Debug().Msg("open rejected: guardrails block trading")
+		h.addReject("OPEN_REJECTED", "guardrails: cooldown or daily loss limit", nil)
+		return
+	}
+	{
+		lp := h.params.Get()
+		if sig.Direction == datafeed.DirectionLong && (lp.LongEnabled == nil || !*lp.LongEnabled) {
+			log.Debug().Msg("open rejected: long direction disabled")
+			h.addReject("OPEN_REJECTED", "long direction disabled in live params", nil)
+			return
+		}
+		if sig.Direction == datafeed.DirectionShort && (lp.ShortEnabled == nil || !*lp.ShortEnabled) {
+			log.Debug().Msg("open rejected: short direction disabled")
+			h.addReject("OPEN_REJECTED", "short direction disabled in live params", nil)
+			return
+		}
+	}
 	// Step 5: 滑点检查在上游完成
 	// Step 6: 冷却期检查
 	now := time.Now().UnixMilli()
