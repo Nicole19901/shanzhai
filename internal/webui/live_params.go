@@ -73,6 +73,9 @@ type LiveParams struct {
 	// ── 保证金模式 ───────────────────────────────────────
 	MarginMode string // "ISOLATED"(逐仓) or "CROSS"(全仓)
 
+	// ── 持仓模式 ─────────────────────────────────────────
+	PositionMode string // "ONE_WAY"(单向) or "HEDGE"(双向)
+
 	// 初始默认值（只读，Init 时固定）
 	defaults LiveParamsSnapshot
 }
@@ -127,7 +130,8 @@ type LiveParamsSnapshot struct {
 	LiquidationShortConf   float64 `json:"liquidation_short_confidence"`
 	OILiquidationThreshold float64 `json:"oi_liquidation_threshold"`
 
-	MarginMode string `json:"margin_mode"` // "ISOLATED" or "CROSS"
+	MarginMode   string `json:"margin_mode"`   // "ISOLATED" or "CROSS"
+	PositionMode string `json:"position_mode"` // "ONE_WAY" or "HEDGE"
 }
 
 func boolPtr(b bool) *bool { return &b }
@@ -181,7 +185,8 @@ func NewLiveParams(cfg *config.Config) *LiveParams {
 			}
 			return 0.003 // 默认 0.3%
 		}(),
-		MarginMode: cfg.Trading.MarginType,
+		MarginMode:   cfg.Trading.MarginType,
+		PositionMode: "ONE_WAY", // 默认单向持仓
 	}
 	lp := &LiveParams{defaults: snap}
 	lp.apply(snap)
@@ -266,6 +271,7 @@ func (lp *LiveParams) snapshotLocked() LiveParamsSnapshot {
 		LiquidationShortConf:   lp.LiquidationShortConf,
 		OILiquidationThreshold: lp.OILiquidationThreshold,
 		MarginMode:             lp.MarginMode,
+		PositionMode:           lp.PositionMode,
 	}
 }
 
@@ -372,5 +378,8 @@ func (lp *LiveParams) apply(s LiveParamsSnapshot) {
 	}
 	if s.MarginMode == "ISOLATED" || s.MarginMode == "CROSS" {
 		lp.MarginMode = s.MarginMode
+	}
+	if s.PositionMode == "ONE_WAY" || s.PositionMode == "HEDGE" {
+		lp.PositionMode = s.PositionMode
 	}
 }

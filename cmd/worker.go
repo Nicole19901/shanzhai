@@ -69,6 +69,7 @@ func newSymbolWorker(
 
 	omgr := execution.NewOrderManager(rest, cfg, metrics)
 	omgr.SetSymbolProvider(func() string { return sym })
+	omgr.SetPositionModeProvider(func() string { return lp.Get().PositionMode })
 
 	w.th = execution.NewTradeHandler(w.pm, omgr, w.sm, guard, cfg, lp, eventLog, metrics)
 	w.th.SetMarkPriceProvider(func() decimal.Decimal {

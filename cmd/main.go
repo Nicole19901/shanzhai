@@ -175,13 +175,20 @@ func main() {
 			if count >= maxSymbols {
 				return fmt.Errorf("最多同时交易 %d 个交易对，请先移除一个", maxSymbols)
 			}
-			if err := rest.SetLeverage(addCtx, sym, lp.Get().Leverage); err != nil {
+			curLP := lp.Get()
+			// 持仓模式（全局，不区分币种）
+			dualSide := curLP.PositionMode == "HEDGE"
+			if err := rest.SetPositionMode(addCtx, dualSide); err != nil {
+				log.Warn().Err(err).Bool("dual", dualSide).Msg("set position mode failed (non-fatal, may already be set)")
+			}
+			if err := rest.SetLeverage(addCtx, sym, curLP.Leverage); err != nil {
 				log.Warn().Err(err).Str("sym", sym).Msg("set leverage failed (non-fatal)")
 			}
-			marginMode := lp.Get().MarginMode
+			marginMode := curLP.MarginMode
 			if marginMode == "" {
 				marginMode = cfg.Trading.MarginType
 			}
+
 			if err := rest.SetMarginType(addCtx, sym, marginMode); err != nil {
 				log.Warn().Err(err).Str("sym", sym).Msg("set margin type failed (non-fatal)")
 			}

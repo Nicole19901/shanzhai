@@ -359,6 +359,34 @@ func (c *RESTClient) SetMarginType(ctx context.Context, symbol, marginType strin
 	return err
 }
 
+// SetPositionMode POST /fapi/v1/positionSide/dual (signed)
+// dualSide=true → 双向持仓(Hedge), false → 单向持仓(One-way)
+func (c *RESTClient) SetPositionMode(ctx context.Context, dualSide bool) error {
+	val := "false"
+	if dualSide {
+		val = "true"
+	}
+	_, err := c.signedPost(ctx, "/fapi/v1/positionSide/dual", map[string]string{
+		"dualSidePosition": val,
+	})
+	return err
+}
+
+// GetPositionMode GET /fapi/v2/positionSide/dual (signed)
+func (c *RESTClient) GetPositionMode(ctx context.Context) (bool, error) {
+	resp, err := c.signedGet(ctx, "/fapi/v1/positionSide/dual", nil)
+	if err != nil {
+		return false, err
+	}
+	var raw struct {
+		DualSidePosition bool `json:"dualSidePosition"`
+	}
+	if err := json.Unmarshal(resp, &raw); err != nil {
+		return false, err
+	}
+	return raw.DualSidePosition, nil
+}
+
 // OpenOrders GET /fapi/v1/openOrders (signed)
 func (c *RESTClient) OpenOrders(ctx context.Context, symbol string) ([]string, error) {
 	resp, err := c.signedGet(ctx, "/fapi/v1/openOrders", map[string]string{"symbol": symbol})

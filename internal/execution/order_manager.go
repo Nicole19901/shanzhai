@@ -15,20 +15,38 @@ import (
 
 // OrderManager 串行处理所有交易所订单请求（唯一允许调用 REST API 的模块）
 type OrderManager struct {
-	rest    *datafeed.RESTClient
-	cfg     *config.Config
-	metrics *telemetry.Metrics
-	symbol  func() string
+	rest         *datafeed.RESTClient
+	cfg          *config.Config
+	metrics      *telemetry.Metrics
+	symbol       func() string
+	positionMode func() string // "ONE_WAY" 或 "HEDGE"
 }
 
 func NewOrderManager(rest *datafeed.RESTClient, cfg *config.Config, m *telemetry.Metrics) *OrderManager {
-	return &OrderManager{rest: rest, cfg: cfg, metrics: m, symbol: func() string { return cfg.Trading.Symbol }}
+	return &OrderManager{
+		rest:         rest,
+		cfg:          cfg,
+		metrics:      m,
+		symbol:       func() string { return cfg.Trading.Symbol },
+		positionMode: func() string { return "ONE_WAY" },
+	}
 }
 
 func (om *OrderManager) SetSymbolProvider(fn func() string) {
 	if fn != nil {
 		om.symbol = fn
 	}
+}
+
+func (om *OrderManager) SetPositionModeProvider(fn func() string) {
+	if fn != nil {
+		om.positionMode = fn
+	}
+}
+
+// isHedge 返回当前是否双向持仓模式
+func (om *OrderManager) isHedge() bool {
+	return om.positionMode != nil && om.positionMode() == "HEDGE"
 }
 
 func (om *OrderManager) currentSymbol() string {
@@ -69,8 +87,17 @@ func (om *OrderManager) OpenMarket(ctx context.Context, dir datafeed.Direction, 
 		Side:             side,
 		Type:             "MARKET",
 		Quantity:         qty,
-		ReduceOnly:       false,
 		NewClientOrderID: clientID,
+	}
+	if om.isHedge() {
+		// 双向持仓：明确指定开仓方向，不用 reduceOnly
+		if dir == datafeed.DirectionLong {
+			req.PositionSide = "LONG"
+		} else {
+			req.PositionSide = "SHORT"
+		}
+	} else {
+		req.PositionSide = "BOTH"
 	}
 
 	ctx2, cancel := context.WithTimeout(ctx, time.Duration(om.cfg.Execution.OrderTimeoutMs)*time.Millisecond)
@@ -106,8 +133,18 @@ func (om *OrderManager) PlaceStopLoss(ctx context.Context, dir datafeed.Directio
 		Type:             "STOP_MARKET",
 		Quantity:         qty,
 		StopPrice:        stopPrice,
-		ReduceOnly:       true,
 		NewClientOrderID: clientID,
+	}
+	if om.isHedge() {
+		// 双向持仓：平多用 LONG，平空用 SHORT，不用 reduceOnly
+		if dir == datafeed.DirectionLong {
+			req.PositionSide = "LONG"
+		} else {
+			req.PositionSide = "SHORT"
+		}
+	} else {
+		req.PositionSide = "BOTH"
+		req.ReduceOnly = true
 	}
 	ctx2, cancel := context.WithTimeout(ctx, time.Duration(om.cfg.Execution.OrderTimeoutMs)*time.Millisecond)
 	defer cancel()
@@ -142,8 +179,17 @@ func (om *OrderManager) PlaceTakeProfit(ctx context.Context, dir datafeed.Direct
 		Type:             "TAKE_PROFIT_MARKET",
 		Quantity:         qty,
 		StopPrice:        targetPrice,
-		ReduceOnly:       true,
 		NewClientOrderID: clientID,
+	}
+	if om.isHedge() {
+		if dir == datafeed.DirectionLong {
+			req.PositionSide = "LONG"
+		} else {
+			req.PositionSide = "SHORT"
+		}
+	} else {
+		req.PositionSide = "BOTH"
+		req.ReduceOnly = true
 	}
 	ctx2, cancel := context.WithTimeout(ctx, time.Duration(om.cfg.Execution.OrderTimeoutMs)*time.Millisecond)
 	defer cancel()
@@ -177,8 +223,17 @@ func (om *OrderManager) CloseMarket(ctx context.Context, dir datafeed.Direction,
 		Side:             side,
 		Type:             "MARKET",
 		Quantity:         qty,
-		ReduceOnly:       true,
 		NewClientOrderID: clientID,
+	}
+	if om.isHedge() {
+		if dir == datafeed.DirectionLong {
+			req.PositionSide = "LONG"
+		} else {
+			req.PositionSide = "SHORT"
+		}
+	} else {
+		req.PositionSide = "BOTH"
+		req.ReduceOnly = true
 	}
 
 	var lastErr error

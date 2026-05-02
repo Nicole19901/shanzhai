@@ -825,6 +825,9 @@ func paramsDiff(old, next LiveParamsSnapshot) []string {
 	if old.MarginMode != next.MarginMode {
 		d = append(d, fmt.Sprintf("保证金模式 %s→%s", old.MarginMode, next.MarginMode))
 	}
+	if old.PositionMode != next.PositionMode {
+		d = append(d, fmt.Sprintf("持仓模式 %s→%s", old.PositionMode, next.PositionMode))
+	}
 	return d
 }
 
@@ -888,6 +891,9 @@ func validateSnapshot(s LiveParamsSnapshot) error {
 	}
 	if s.MarginMode != "" && s.MarginMode != "ISOLATED" && s.MarginMode != "CROSS" {
 		return fmt.Errorf("margin_mode must be ISOLATED or CROSS")
+	}
+	if s.PositionMode != "" && s.PositionMode != "ONE_WAY" && s.PositionMode != "HEDGE" {
+		return fmt.Errorf("position_mode must be ONE_WAY or HEDGE")
 	}
 	if s.OILiquidationThreshold != 0 && (s.OILiquidationThreshold < 0.0001 || s.OILiquidationThreshold > 0.05) {
 		return fmt.Errorf("oi_liquidation_threshold must be in [0.0001, 0.05]")
@@ -1113,14 +1119,14 @@ const adminHTML = `<!DOCTYPE html>
 <script>
 const groups=[
 {title:'持仓时间 & 冷却',items:[['cooldown_after_exit_sec','number','冷却秒',0,300,1,v=>v+'s'],['max_holding_time_sec','number','最长持仓秒',60,86400,60,v=>v+'s'],['min_holding_time_sec','number','最短持仓秒',0,3600,5,v=>v+'s']]},
-{title:'交易执行',items:[['margin_usdt','number','保证金 USDT',1,100000,1,v=>v+' U'],['leverage','number','杠杆',1,10,1,v=>v+'x'],['margin_mode','select','保证金模式',0,0,0,v=>v==='CROSS'?'全仓':'逐仓'],['use_maker_mode','checkbox','Maker 模式',0,0,0,v=>v?'开':'关'],['maker_offset_bps','range','Maker 偏移 bps',0,20,0.1,v=>v.toFixed(1)+' bps'],['guard_deadline_ms','number','保护单截止 ms',100,180,1,v=>v+'ms'],['depth_levels','number','深度档位',1,20,1,v=>v+'档'],['quantity_precision','number','下单精度(ETH=3,小币=0)',0,8,1,v=>v+'位']]},
+{title:'交易执行',items:[['margin_usdt','number','保证金 USDT',1,100000,1,v=>v+' U'],['leverage','number','杠杆',1,10,1,v=>v+'x'],['margin_mode','select','保证金模式',0,0,0,v=>v==='CROSS'?'全仓':'逐仓'],['position_mode','select','持仓模式',0,0,0,v=>v==='HEDGE'?'双向':'单向'],['use_maker_mode','checkbox','Maker 模式',0,0,0,v=>v?'开':'关'],['maker_offset_bps','range','Maker 偏移 bps',0,20,0.1,v=>v.toFixed(1)+' bps'],['guard_deadline_ms','number','保护单截止 ms',100,180,1,v=>v+'ms'],['depth_levels','number','深度档位',1,20,1,v=>v+'档'],['quantity_precision','number','下单精度(ETH=3,小币=0)',0,8,1,v=>v+'位']]},
 {title:'引擎阈值',items:[['trend_enabled','checkbox','趋势引擎',0,0,0,v=>v?'开':'关'],['oi_delta_threshold','range','OI Delta',0.001,0.02,0.001,v=>(v*100).toFixed(2)+'%'],['squeeze_enabled','checkbox','Squeeze 引擎',0,0,0,v=>v?'开':'关'],['basis_zscore_threshold','range','Basis ZScore',1,5,0.1,v=>v.toFixed(1)],['transition_enabled','checkbox','Transition 引擎',0,0,0,v=>v?'开':'关'],['vol_compression_ratio','range','波动压缩比',0.1,0.9,0.05,v=>v.toFixed(2)],['liquidation_enabled','checkbox','踩踏/逼空引擎',0,0,0,v=>v?'开':'关'],['oi_liquidation_threshold','range','踩踏 OI 变化率',0.001,0.02,0.001,v=>(v*100).toFixed(2)+'%']]},
 {title:'风控',items:[['max_slippage_bps','range','最大滑点 bps',1,100,0.5,v=>v.toFixed(1)+' bps'],['daily_loss_limit_pct','range','日亏损限制',0.001,0.2,0.001,v=>(v*100).toFixed(2)+'%'],['consecutive_loss_limit','number','连续亏损限制',1,20,1,v=>v+'次']]}
 ];
 let dirState={long_enabled:true,short_enabled:true};
 const dirTPSL={long_tp:0.008,long_sl:0.004,short_tp:0.008,short_sl:0.004};
 const fields=[];const grid=document.getElementById('grid');
-for(const g of groups){const card=document.createElement('div');card.className='card';card.style='padding:6px 8px';const h=document.createElement('h2');h.style='margin-bottom:4px';h.textContent=g.title;card.appendChild(h);const inner=document.createElement('div');inner.style='display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:3px';for(const it of g.items){fields.push(it);const[id,type,label,min,max,step]=it;const wrap=document.createElement('div');if(type==='checkbox'){wrap.className='check';wrap.innerHTML='<input id="'+id+'" type="checkbox"><label for="'+id+'">'+label+' <span id="v_'+id+'"></span></label>';}else if(type==='select'){wrap.className='field';wrap.style='margin-bottom:2px';wrap.innerHTML='<label for="'+id+'" style="font-size:10px">'+label+'</label><select id="'+id+'" style="width:100%;background:#0d1116;border:1px solid #34414d;border-radius:5px;color:#e8edf2;padding:4px 6px;font-size:12px"><option value="ISOLATED">逐仓 ISOLATED</option><option value="CROSS">全仓 CROSS</option></select>';}else{wrap.className='field';wrap.style='margin-bottom:2px';wrap.innerHTML='<label for="'+id+'" style="font-size:10px">'+label+' <span id="v_'+id+'"></span></label><input id="'+id+'" type="'+type+'" min="'+min+'" max="'+max+'" step="'+step+'">';}inner.appendChild(wrap);}card.appendChild(inner);grid.appendChild(card);}
+for(const g of groups){const card=document.createElement('div');card.className='card';card.style='padding:6px 8px';const h=document.createElement('h2');h.style='margin-bottom:4px';h.textContent=g.title;card.appendChild(h);const inner=document.createElement('div');inner.style='display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:3px';for(const it of g.items){fields.push(it);const[id,type,label,min,max,step]=it;const wrap=document.createElement('div');if(type==='checkbox'){wrap.className='check';wrap.innerHTML='<input id="'+id+'" type="checkbox"><label for="'+id+'">'+label+' <span id="v_'+id+'"></span></label>';}else if(type==='select'){wrap.className='field';wrap.style='margin-bottom:2px';const opts=id==='position_mode'?'<option value="ONE_WAY">单向持仓</option><option value="HEDGE">双向持仓(Hedge)</option>':'<option value="ISOLATED">逐仓 ISOLATED</option><option value="CROSS">全仓 CROSS</option>';wrap.innerHTML='<label for="'+id+'" style="font-size:10px">'+label+'</label><select id="'+id+'" style="width:100%;background:#0d1116;border:1px solid #34414d;border-radius:5px;color:#e8edf2;padding:4px 6px;font-size:12px">'+opts+'</select>';}else{wrap.className='field';wrap.style='margin-bottom:2px';wrap.innerHTML='<label for="'+id+'" style="font-size:10px">'+label+' <span id="v_'+id+'"></span></label><input id="'+id+'" type="'+type+'" min="'+min+'" max="'+max+'" step="'+step+'">';}inner.appendChild(wrap);}card.appendChild(inner);grid.appendChild(card);}
 // 方向卡 TP/SL 滑块事件
 ['long_tp_pct','long_sl_pct','short_tp_pct','short_sl_pct'].forEach(id=>{const el=document.getElementById(id);el.addEventListener('input',()=>{const pct=(parseFloat(el.value)*100).toFixed(2)+'%';document.getElementById('v_'+id).textContent=pct;const k=id.replace('_pct','').replace('_','_');dirTPSL[id.replace('_pct','')]=parseFloat(el.value);});});
 function fmt(it,val){return it[6](it[1]==='checkbox'?!!val:parseFloat(val))}
