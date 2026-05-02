@@ -131,12 +131,20 @@ func main() {
 		}
 	})
 
-	// Signal hook: 只对当前活跃交易对执行下单逻辑
+	// signalQueue: 解耦 evaluator goroutine 与下单 REST 调用，防止 WS goroutine 被阻塞
+	type signalQueueEntry struct {
+		sym  string
+		sig  *engine.Signal
+		mctx *datafeed.MarketContext
+	}
+	signalQueue := make(chan signalQueueEntry, 1)
+
+	// Signal hook: 仅做轻量过滤 + 非阻塞投递，不做任何 REST 调用
 	watcher.SetSignalHook(func(sym string, sig *engine.Signal, mctx *datafeed.MarketContext) {
 		if sym != currentSymbol() {
 			return
 		}
-		// 状态机过滤
+		// 状态机过滤（无锁读，快速路径）
 		switch sig.Engine {
 		case engine.EngineTrend:
 			if !sm.CanOpenTrend() {
@@ -150,72 +158,15 @@ func main() {
 		if !guard.CanTrade() || !omgr.HasCredentials() {
 			return
 		}
-
-		lp := liveParams.Get()
-		if sig.Direction == datafeed.DirectionLong && (lp.LongEnabled == nil || !*lp.LongEnabled) {
-			return
+		// 非阻塞投递；队列满时丢弃（上一个信号仍在处理中）
+		select {
+		case signalQueue <- signalQueueEntry{sym: sym, sig: sig, mctx: mctx}:
+		default:
+			log.Debug().Str("engine", string(sig.Engine)).Msg("signal queue full, dropping signal")
 		}
-		if sig.Direction == datafeed.DirectionShort && (lp.ShortEnabled == nil || !*lp.ShortEnabled) {
-			return
-		}
-
-		metrics.SignalGenerated(string(sig.Engine), dirLabel(sig.Direction))
-
-		// 手数计算
-		ethMark := latestETHMark.Load().(decimal.Decimal)
-		lotDecimal, lotErr := decimal.NewFromString(lp.MarginUSDT)
-		if lotErr == nil && lotDecimal.IsPositive() {
-			lotDecimal = lotDecimal.Mul(decimal.NewFromInt(int64(lp.Leverage))).Div(ethMark).Truncate(6)
-		}
-		if lotErr != nil || lotDecimal.IsZero() || lotDecimal.IsNegative() {
-			log.Error().Str("margin_usdt", lp.MarginUSDT).Msg("invalid live margin, signal rejected")
-			eventLog.AddReject("SIGNAL_REJECTED", "invalid live lot size", map[string]interface{}{
-				"engine":      string(sig.Engine),
-				"dir":         dirLabel(sig.Direction),
-				"margin_usdt": lp.MarginUSDT,
-			})
-			return
-		}
-
-		// 滑点估算
-		spreadBps, _ := mctx.SpreadBps.Float64()
-		lot, _ := lotDecimal.Float64()
-		var depth decimal.Decimal
-		if sig.Direction == datafeed.DirectionLong {
-			depth = mctx.TotalBidDepth
-		} else {
-			depth = mctx.TotalAskDepth
-		}
-		depthF, _ := depth.Float64()
-		vol1m, _ := mctx.RealizedVol1m.Float64()
-		estSlip := slippageEst.Estimate(spreadBps, lot, depthF, vol1m*10000)
-		if estSlip > lp.MaxSlippageBps {
-			log.Debug().Float64("est_slip_bps", estSlip).Msg("slippage too high, signal rejected")
-			eventLog.AddReject("SIGNAL_REJECTED", "estimated slippage exceeds max", map[string]interface{}{
-				"engine":       string(sig.Engine),
-				"dir":          dirLabel(sig.Direction),
-				"est_slip_bps": estSlip,
-				"max_bps":      lp.MaxSlippageBps,
-			})
-			return
-		}
-		tpPct := lp.LongTPPct
-		if sig.Direction == datafeed.DirectionShort {
-			tpPct = lp.ShortTPPct
-		}
-		if slippageEst.ShouldReject(tpPct, sig.Confidence, estSlip, 0.04) {
-			eventLog.AddReject("SIGNAL_REJECTED", "expected pnl does not cover trading cost", map[string]interface{}{
-				"engine":       string(sig.Engine),
-				"dir":          dirLabel(sig.Direction),
-				"confidence":   sig.Confidence,
-				"est_slip_bps": estSlip,
-			})
-			return
-		}
-
-		tradeHandler.TryReversal(ctx, sig.Direction, mctx)
-		tradeHandler.TryOpen(ctx, sig)
 	})
+
+	// trade_executor goroutine 在 start 辅助函数定义后启动（见下方）
 
 	// 状态提供者：WS 预热状态（使用 watcher 的消息计数）
 	admin.SetStatusProvider(func() map[string]interface{} {
@@ -304,6 +255,78 @@ func main() {
 	start("eth_ws", func() { ethWS.Run(ctx) })
 	start("state_machine", func() { sm.Run(ctx) })
 	start("reconciliation", func() { recon.Run(ctx) })
+
+	// trade_executor: 串行消费信号队列，执行滑点检查 + TryReversal/TryOpen（允许阻塞 REST）
+	start("trade_executor", func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case entry := <-signalQueue:
+				sym, sig, mctx := entry.sym, entry.sig, entry.mctx
+				if sym != currentSymbol() {
+					continue
+				}
+				lp := liveParams.Get()
+				if sig.Direction == datafeed.DirectionLong && (lp.LongEnabled == nil || !*lp.LongEnabled) {
+					continue
+				}
+				if sig.Direction == datafeed.DirectionShort && (lp.ShortEnabled == nil || !*lp.ShortEnabled) {
+					continue
+				}
+
+				metrics.SignalGenerated(string(sig.Engine), dirLabel(sig.Direction))
+
+				ethMark := latestETHMark.Load().(decimal.Decimal)
+				lotDecimal, lotErr := decimal.NewFromString(lp.MarginUSDT)
+				if lotErr == nil && lotDecimal.IsPositive() {
+					lotDecimal = lotDecimal.Mul(decimal.NewFromInt(int64(lp.Leverage))).Div(ethMark).Truncate(6)
+				}
+				if lotErr != nil || lotDecimal.IsZero() || lotDecimal.IsNegative() {
+					log.Error().Str("margin_usdt", lp.MarginUSDT).Msg("invalid live margin, signal rejected")
+					eventLog.AddReject("SIGNAL_REJECTED", "invalid live lot size", map[string]interface{}{
+						"engine": string(sig.Engine), "dir": dirLabel(sig.Direction),
+						"margin_usdt": lp.MarginUSDT,
+					})
+					continue
+				}
+
+				spreadBps, _ := mctx.SpreadBps.Float64()
+				lot, _ := lotDecimal.Float64()
+				var depth decimal.Decimal
+				if sig.Direction == datafeed.DirectionLong {
+					depth = mctx.TotalBidDepth
+				} else {
+					depth = mctx.TotalAskDepth
+				}
+				depthF, _ := depth.Float64()
+				vol1m, _ := mctx.RealizedVol1m.Float64()
+				estSlip := slippageEst.Estimate(spreadBps, lot, depthF, vol1m*10000)
+				if estSlip > lp.MaxSlippageBps {
+					log.Debug().Float64("est_slip_bps", estSlip).Msg("slippage too high, signal rejected")
+					eventLog.AddReject("SIGNAL_REJECTED", "estimated slippage exceeds max", map[string]interface{}{
+						"engine": string(sig.Engine), "dir": dirLabel(sig.Direction),
+						"est_slip_bps": estSlip, "max_bps": lp.MaxSlippageBps,
+					})
+					continue
+				}
+				tpPct := lp.LongTPPct
+				if sig.Direction == datafeed.DirectionShort {
+					tpPct = lp.ShortTPPct
+				}
+				if slippageEst.ShouldReject(tpPct, sig.Confidence, estSlip, 0.04) {
+					eventLog.AddReject("SIGNAL_REJECTED", "expected pnl does not cover trading cost", map[string]interface{}{
+						"engine": string(sig.Engine), "dir": dirLabel(sig.Direction),
+						"confidence": sig.Confidence, "est_slip_bps": estSlip,
+					})
+					continue
+				}
+
+				tradeHandler.TryReversal(ctx, sig.Direction, mctx)
+				tradeHandler.TryOpen(ctx, sig)
+			}
+		}
+	})
 
 	// exit_monitor: 独立 goroutine 轮询最新 mark price 检查平仓条件
 	// 与 WS goroutine 完全解耦，避免 REST 调用阻塞 markPrice channel
