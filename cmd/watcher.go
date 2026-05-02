@@ -153,11 +153,14 @@ func (w *SymbolWatcher) Add(ctx context.Context, sym string) error {
 		return nil
 	}
 	state := newSymState(sym, w.rest, w.cfg)
+	// 在锁内派生 cancel，确保 Remove() 拿到真实 cancel 而不是 no-op 占位符
+	symCtx, cancel := context.WithCancel(ctx)
+	state.cancel = cancel
 	w.states[sym] = state
 	w.mu.Unlock()
 
 	log.Info().Str("symbol", sym).Msg("watcher: adding symbol, starting goroutines")
-	w.startStateGoroutines(ctx, state)
+	w.startStateGoroutines(symCtx, state)
 	w.rebuildWS()
 	log.Info().Str("symbol", sym).Msg("watcher: symbol added, WS streams rebuilt")
 	return nil
@@ -278,10 +281,8 @@ func (w *SymbolWatcher) rebuildWS() {
 }
 
 // startStateGoroutines launches all goroutines for a symState.
-func (w *SymbolWatcher) startStateGoroutines(parentCtx context.Context, state *symState) {
-	ctx, cancel := context.WithCancel(parentCtx)
-	state.cancel = cancel
-
+// ctx must already be a child context derived from the parent; cancel is stored on state before this call.
+func (w *SymbolWatcher) startStateGoroutines(ctx context.Context, state *symState) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
