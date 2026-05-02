@@ -117,6 +117,11 @@ type Server struct {
 	watchlistAdd    func(ctx context.Context, sym string) error
 	watchlistRemove func(sym string)
 	watchlistGet    func() []string
+
+	// modeChange is called when the user changes PositionMode or MarginMode in the UI;
+	// implementer is expected to push the new mode to Binance for all watched symbols.
+	// Empty strings mean "no change for this field".
+	modeChange func(ctx context.Context, newPositionMode, newMarginMode string)
 }
 
 func NewServer(params *LiveParams, events *EventLog, rest *datafeed.RESTClient, serviceName, symbol string) *Server {
@@ -150,6 +155,12 @@ func (s *Server) SetWatchlistHandlers(
 	s.watchlistAdd = add
 	s.watchlistRemove = remove
 	s.watchlistGet = get
+}
+
+// SetModeChangeHandler registers a callback fired when PositionMode or MarginMode
+// is changed via /api/params. Receives only fields that actually changed (others empty).
+func (s *Server) SetModeChangeHandler(fn func(ctx context.Context, newPositionMode, newMarginMode string)) {
+	s.modeChange = fn
 }
 
 func (s *Server) SetSymbol(sym string) {
@@ -649,6 +660,23 @@ func (s *Server) handleParams(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// 检测持仓模式 / 保证金模式变化，并通过回调推到 Binance（覆盖所有 watchlist 中的 symbol）
+		if s.modeChange != nil && s.rest.HasCredentials() {
+			var newPos, newMargin string
+			if snap.PositionMode != "" && snap.PositionMode != old.PositionMode {
+				newPos = snap.PositionMode
+			}
+			if snap.MarginMode != "" && snap.MarginMode != old.MarginMode {
+				newMargin = snap.MarginMode
+			}
+			if newPos != "" || newMargin != "" {
+				modeCtx, modeCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				go func() {
+					defer modeCancel()
+					s.modeChange(modeCtx, newPos, newMargin)
+				}()
+			}
+		}
 		// 生成操作日志（仅记录变更字段）
 		if s.events != nil {
 			diffs := paramsDiff(old, snap)
@@ -869,6 +897,7 @@ func validateSnapshot(s LiveParamsSnapshot) error {
 		s.TrendLongConfidence, s.TrendShortConfidence,
 		s.SqueezeLongConfidence, s.SqueezeShortConfidence,
 		s.TransitionLongConfidence, s.TransitionShortConfidence,
+		s.LiquidationLongConf, s.LiquidationShortConf,
 	} {
 		if v < 0 || v > 1 {
 			return fmt.Errorf("confidence values must be in [0, 1]")

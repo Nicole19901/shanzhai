@@ -65,6 +65,8 @@ func main() {
 
 	// workers: sym → symbolWorker，最多 maxSymbols 个
 	var workersMu sync.RWMutex
+	// addMu 串行化 watchlist add 操作（防止并发越过 maxSymbols 上限的 TOCTOU）
+	var addMu sync.Mutex
 	workers := make(map[string]*symbolWorker)
 
 	var wg sync.WaitGroup
@@ -165,6 +167,10 @@ func main() {
 	// Watchlist handlers: 加入 = 验证(server侧已做) + 杠杆设置 + 建立 WS + 创建 worker
 	admin.SetWatchlistHandlers(
 		func(addCtx context.Context, sym string) error {
+			// 串行化所有 add 操作，避免并发越过 maxSymbols 限制的 TOCTOU
+			addMu.Lock()
+			defer addMu.Unlock()
+
 			workersMu.RLock()
 			count := len(workers)
 			_, exists := workers[sym]
@@ -208,6 +214,33 @@ func main() {
 			return watcher.Symbols()
 		},
 	)
+
+	// 当 PositionMode / MarginMode 在 UI 改变时，把新模式推送到 Binance（覆盖所有 watchlist 中的 symbol）
+	admin.SetModeChangeHandler(func(modeCtx context.Context, newPositionMode, newMarginMode string) {
+		if newPositionMode != "" {
+			dualSide := newPositionMode == "HEDGE"
+			if err := rest.SetPositionMode(modeCtx, dualSide); err != nil {
+				log.Warn().Err(err).Bool("dual", dualSide).Msg("mode change: SetPositionMode failed (may be already set, or has open positions)")
+			} else {
+				log.Info().Bool("dual", dualSide).Msg("mode change: position mode synced to Binance")
+			}
+		}
+		if newMarginMode != "" {
+			workersMu.RLock()
+			syms := make([]string, 0, len(workers))
+			for sym := range workers {
+				syms = append(syms, sym)
+			}
+			workersMu.RUnlock()
+			for _, sym := range syms {
+				if err := rest.SetMarginType(modeCtx, sym, newMarginMode); err != nil {
+					log.Warn().Err(err).Str("sym", sym).Str("margin", newMarginMode).Msg("mode change: SetMarginType failed (may be already set, or has open position)")
+				} else {
+					log.Info().Str("sym", sym).Str("margin", newMarginMode).Msg("mode change: margin mode synced to Binance")
+				}
+			}
+		}
+	})
 
 	// Status provider
 	admin.SetStatusProvider(func() map[string]interface{} {
