@@ -53,13 +53,37 @@ func (c *WSClient) SetStreams(streams []string, handlers map[string]StreamHandle
 		return fmt.Errorf("stream count %d exceeds limit %d", len(streams), maxStreams)
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 如果新 streams ⊆ 老 streams，仅更新 handlers，不重连（避免无谓断线）
+	if streamsSubset(streams, c.streams) {
+		c.handlers = handlers
+		return nil
+	}
+
 	c.streams = streams
 	c.handlers = handlers
 	if c.conn != nil {
-		_ = c.conn.Close()
+		_ = c.conn.Close() // 触发 connect() 退出并重连
 	}
-	c.mu.Unlock()
 	return nil
+}
+
+// streamsSubset reports whether all elements of sub are present in super.
+func streamsSubset(sub, super []string) bool {
+	if len(sub) == 0 {
+		return true
+	}
+	set := make(map[string]struct{}, len(super))
+	for _, s := range super {
+		set[s] = struct{}{}
+	}
+	for _, s := range sub {
+		if _, ok := set[s]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *WSClient) Run(ctx context.Context) {
