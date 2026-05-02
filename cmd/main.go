@@ -199,7 +199,11 @@ func main() {
 			})
 			return
 		}
-		if slippageEst.ShouldReject(lp.TakeProfitPct, sig.Confidence, estSlip, 0.04) {
+		tpPct := lp.LongTPPct
+		if sig.Direction == datafeed.DirectionShort {
+			tpPct = lp.ShortTPPct
+		}
+		if slippageEst.ShouldReject(tpPct, sig.Confidence, estSlip, 0.04) {
 			eventLog.AddReject("SIGNAL_REJECTED", "expected pnl does not cover trading cost", map[string]interface{}{
 				"engine":       string(sig.Engine),
 				"dir":          dirLabel(sig.Direction),
