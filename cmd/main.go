@@ -85,7 +85,7 @@ func main() {
 	admin.SetManualTrader(tradeHandler)
 
 	recon := execution.NewReconciliationLoop(
-		rest, pm, omgr, sm, cfg.Trading.Symbol,
+		rest, pm, omgr, sm, tradeHandler, cfg.Trading.Symbol,
 		cfg.Execution.ReconciliationIntervalSec,
 	)
 	recon.SetSymbolProvider(currentSymbol)

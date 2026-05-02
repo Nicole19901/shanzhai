@@ -13,13 +13,14 @@ import (
 
 // ReconciliationLoop 每 10s 对账一次
 type ReconciliationLoop struct {
-	rest     *datafeed.RESTClient
-	pm       *PositionManager
-	om       *OrderManager
-	sm       *statemachine.StateMachine
-	symbol   string
-	symbolFn func() string
-	interval time.Duration
+	rest         *datafeed.RESTClient
+	pm           *PositionManager
+	om           *OrderManager
+	sm           *statemachine.StateMachine
+	tradeHandler *TradeHandler
+	symbol       string
+	symbolFn     func() string
+	interval     time.Duration
 
 	consecutiveFailures int
 }
@@ -42,16 +43,18 @@ func NewReconciliationLoop(
 	pm *PositionManager,
 	om *OrderManager,
 	sm *statemachine.StateMachine,
+	tradeHandler *TradeHandler,
 	symbol string,
 	intervalSec int64,
 ) *ReconciliationLoop {
 	return &ReconciliationLoop{
-		rest:     rest,
-		pm:       pm,
-		om:       om,
-		sm:       sm,
-		symbol:   symbol,
-		interval: time.Duration(intervalSec) * time.Second,
+		rest:         rest,
+		pm:           pm,
+		om:           om,
+		sm:           sm,
+		tradeHandler: tradeHandler,
+		symbol:       symbol,
+		interval:     time.Duration(intervalSec) * time.Second,
 	}
 }
 
@@ -104,8 +107,14 @@ func (r *ReconciliationLoop) reconcile(ctx context.Context) {
 	switch {
 	case !localFlat && exFlat:
 		// Case A: 本地有仓，交易所无仓（兜底订单已触发但 WS 未通知）
-		log.Warn().Msg("reconciliation CASE A: exchange flat, local has position → reset local")
+		log.Warn().Msg("reconciliation CASE A: exchange flat, local has position → cancel guard orders, reset local")
+		// 先取消可能残留的本地兜底订单（失败不阻塞）
+		r.om.CancelOrder(ctx, local.StopLossOrderID)
+		r.om.CancelOrder(ctx, local.TakeProfitOrderID)
 		r.pm.Close()
+		if r.tradeHandler != nil {
+			r.tradeHandler.RecordReconcileClose()
+		}
 		r.sm.RequestTransition(statemachine.StateStress, "reconciliation case A")
 
 	case localFlat && !exFlat:

@@ -383,6 +383,16 @@ func (h *TradeHandler) doClose(ctx context.Context, reason ExitReason) {
 }
 
 // ManualOpen 手动开仓（绕过引擎信号，保留安全检查）
+// RecordReconcileClose 供 ReconciliationLoop Case A 调用：
+// 兜底订单已在交易所触发但本地未感知，此处记录风控并激活冷却期（PnL=0 因实际成交价未知）
+func (h *TradeHandler) RecordReconcileClose() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.guard.RecordTrade(0)
+	h.cooldownUntil = time.Now().UnixMilli() + h.params.Get().CooldownAfterExitSec*1000
+	log.Warn().Msg("reconcile close recorded: guard.RecordTrade(0), cooldown activated")
+}
+
 func (h *TradeHandler) ManualOpen(ctx context.Context, dir datafeed.Direction) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
