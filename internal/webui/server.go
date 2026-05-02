@@ -868,6 +868,9 @@ func validateSnapshot(s LiveParamsSnapshot) error {
 	if s.DepthLevels != 0 && (s.DepthLevels < 1 || s.DepthLevels > 20) {
 		return fmt.Errorf("depth_levels must be in [1, 20]")
 	}
+	if s.QuantityPrecision < 0 || s.QuantityPrecision > 8 {
+		return fmt.Errorf("quantity_precision must be in [0, 8]")
+	}
 	return nil
 }
 
@@ -1090,7 +1093,7 @@ const adminHTML = `<!DOCTYPE html>
 <script>
 const groups=[
 {title:'持仓时间 & 冷却',items:[['cooldown_after_exit_sec','number','冷却秒',0,300,1,v=>v+'s'],['max_holding_time_sec','number','最长持仓秒',60,86400,60,v=>v+'s'],['min_holding_time_sec','number','最短持仓秒',0,3600,5,v=>v+'s']]},
-{title:'交易执行',items:[['margin_usdt','number','保证金 USDT',1,100000,1,v=>v+' U'],['leverage','number','杠杆',1,10,1,v=>v+'x'],['use_maker_mode','checkbox','Maker 模式',0,0,0,v=>v?'开':'关'],['maker_offset_bps','range','Maker 偏移 bps',0,20,0.1,v=>v.toFixed(1)+' bps'],['guard_deadline_ms','number','保护单截止 ms',100,180,1,v=>v+'ms'],['depth_levels','number','深度档位',1,20,1,v=>v+'档']]},
+{title:'交易执行',items:[['margin_usdt','number','保证金 USDT',1,100000,1,v=>v+' U'],['leverage','number','杠杆',1,10,1,v=>v+'x'],['use_maker_mode','checkbox','Maker 模式',0,0,0,v=>v?'开':'关'],['maker_offset_bps','range','Maker 偏移 bps',0,20,0.1,v=>v.toFixed(1)+' bps'],['guard_deadline_ms','number','保护单截止 ms',100,180,1,v=>v+'ms'],['depth_levels','number','深度档位',1,20,1,v=>v+'档'],['quantity_precision','number','下单精度(ETH=3,小币=0)',0,8,1,v=>v+'位']]},
 {title:'引擎阈值',items:[['trend_enabled','checkbox','趋势引擎',0,0,0,v=>v?'开':'关'],['oi_delta_threshold','range','OI Delta',0.001,0.02,0.001,v=>(v*100).toFixed(2)+'%'],['squeeze_enabled','checkbox','Squeeze 引擎',0,0,0,v=>v?'开':'关'],['basis_zscore_threshold','range','Basis ZScore',1,5,0.1,v=>v.toFixed(1)],['transition_enabled','checkbox','Transition 引擎',0,0,0,v=>v?'开':'关'],['vol_compression_ratio','range','波动压缩比',0.1,0.9,0.05,v=>v.toFixed(2)]]},
 {title:'风控',items:[['max_slippage_bps','range','最大滑点 bps',1,100,0.5,v=>v.toFixed(1)+' bps'],['daily_loss_limit_pct','range','日亏损限制',0.001,0.2,0.001,v=>(v*100).toFixed(2)+'%'],['consecutive_loss_limit','number','连续亏损限制',1,20,1,v=>v+'次']]}
 ];
@@ -1117,7 +1120,7 @@ function populate(cur){
 function collect(){
   const o={};
   for(const it of fields){const el=document.getElementById(it[0]);o[it[0]]=it[1]==='checkbox'?el.checked:(it[0]==='margin_usdt'?String(el.value):Number(el.value));}
-  o.leverage=parseInt(o.leverage);o.cooldown_after_exit_sec=parseInt(o.cooldown_after_exit_sec);o.max_holding_time_sec=parseInt(o.max_holding_time_sec);o.min_holding_time_sec=parseInt(o.min_holding_time_sec);o.guard_deadline_ms=parseInt(o.guard_deadline_ms);o.consecutive_loss_limit=parseInt(o.consecutive_loss_limit);o.depth_levels=parseInt(o.depth_levels);
+  o.leverage=parseInt(o.leverage);o.cooldown_after_exit_sec=parseInt(o.cooldown_after_exit_sec);o.max_holding_time_sec=parseInt(o.max_holding_time_sec);o.min_holding_time_sec=parseInt(o.min_holding_time_sec);o.guard_deadline_ms=parseInt(o.guard_deadline_ms);o.consecutive_loss_limit=parseInt(o.consecutive_loss_limit);o.depth_levels=parseInt(o.depth_levels);o.quantity_precision=parseInt(o.quantity_precision);
   o.long_enabled=dirState.long_enabled;o.short_enabled=dirState.short_enabled;
   o.signal_based_exit=document.getElementById('signal_based_exit').checked;
   o.long_tp_pct=parseFloat(document.getElementById('long_tp_pct').value);
