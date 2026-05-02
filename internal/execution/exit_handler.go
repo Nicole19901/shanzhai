@@ -66,6 +66,10 @@ func (h *TradeHandler) SetMarkPriceProvider(fn func() decimal.Decimal) {
 }
 
 func (h *TradeHandler) orderQty(lp webui.LiveParamsSnapshot, fallbackPrice decimal.Decimal) (decimal.Decimal, error) {
+	prec := int32(lp.QuantityPrecision) // 0=整数(小币种), 3=ETH, 默认6
+	if prec < 0 {
+		prec = 0
+	}
 	margin, err := decimal.NewFromString(lp.MarginUSDT)
 	if err == nil && margin.IsPositive() {
 		price := fallbackPrice
@@ -75,13 +79,13 @@ func (h *TradeHandler) orderQty(lp webui.LiveParamsSnapshot, fallbackPrice decim
 		if price.IsZero() || price.IsNegative() {
 			return decimal.Zero, fmt.Errorf("mark price unavailable for margin sizing")
 		}
-		return margin.Mul(decimal.NewFromInt(int64(lp.Leverage))).Div(price).Truncate(6), nil
+		return margin.Mul(decimal.NewFromInt(int64(lp.Leverage))).Div(price).Truncate(prec), nil
 	}
 	qty, err := decimal.NewFromString(lp.LotSize)
 	if err != nil || qty.IsZero() || qty.IsNegative() {
 		return decimal.Zero, fmt.Errorf("invalid order size")
 	}
-	return qty, nil
+	return qty.Truncate(prec), nil
 }
 
 // TryOpen 尝试开仓（严格按照 spec 顺序检查）

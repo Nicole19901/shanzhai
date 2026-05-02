@@ -279,9 +279,13 @@ func main() {
 				metrics.SignalGenerated(string(sig.Engine), dirLabel(sig.Direction))
 
 				ethMark := latestETHMark.Load().(decimal.Decimal)
+				prec := int32(lp.QuantityPrecision)
+				if prec < 0 {
+					prec = 0
+				}
 				lotDecimal, lotErr := decimal.NewFromString(lp.MarginUSDT)
 				if lotErr == nil && lotDecimal.IsPositive() {
-					lotDecimal = lotDecimal.Mul(decimal.NewFromInt(int64(lp.Leverage))).Div(ethMark).Truncate(6)
+					lotDecimal = lotDecimal.Mul(decimal.NewFromInt(int64(lp.Leverage))).Div(ethMark).Truncate(prec)
 				}
 				if lotErr != nil || lotDecimal.IsZero() || lotDecimal.IsNegative() {
 					log.Error().Str("margin_usdt", lp.MarginUSDT).Msg("invalid live margin, signal rejected")

@@ -54,7 +54,8 @@ type LiveParams struct {
 	ConsecutiveLossLimit int
 
 	// ── 微观结构 ─────────────────────────────────────────
-	DepthLevels int // 吃单深度档位 1-20，默认 5
+	DepthLevels        int // 吃单深度档位 1-20，默认 5
+	QuantityPrecision  int // 下单量小数位数，对应 Binance quantityPrecision（0=整数，3=ETH，默认6）
 
 	// ── 平仓模式 ─────────────────────────────────────────
 	SignalBasedExit bool // true=信号窗口确认平仓，false=固定止盈
@@ -107,6 +108,7 @@ type LiveParamsSnapshot struct {
 	DailyLossLimitPct    float64 `json:"daily_loss_limit_pct"`
 	ConsecutiveLossLimit int     `json:"consecutive_loss_limit"`
 	DepthLevels          int     `json:"depth_levels"`
+	QuantityPrecision    int     `json:"quantity_precision"`
 	SignalBasedExit      bool    `json:"signal_based_exit"`
 	LongEnabled          *bool   `json:"long_enabled,omitempty"`
 	ShortEnabled         *bool   `json:"short_enabled,omitempty"`
@@ -150,6 +152,7 @@ func NewLiveParams(cfg *config.Config) *LiveParams {
 		DailyLossLimitPct:    cfg.Risk.DailyLossLimitPct,
 		ConsecutiveLossLimit: cfg.Risk.ConsecutiveLossLimit,
 		DepthLevels:          5,
+		QuantityPrecision:    6, // 默认6，适用于 ETH 等主流币；小币种（quantityPrecision=0）改为 0
 		LongEnabled:          boolPtr(true),
 		ShortEnabled:         boolPtr(true),
 	}
@@ -226,6 +229,7 @@ func (lp *LiveParams) snapshotLocked() LiveParamsSnapshot {
 		DailyLossLimitPct:    lp.DailyLossLimitPct,
 		ConsecutiveLossLimit: lp.ConsecutiveLossLimit,
 		DepthLevels:          lp.DepthLevels,
+		QuantityPrecision:    lp.QuantityPrecision,
 		SignalBasedExit:      lp.SignalBasedExit,
 		LongEnabled:          boolPtr(lp.LongEnabled),
 		ShortEnabled:         boolPtr(lp.ShortEnabled),
@@ -306,6 +310,13 @@ func (lp *LiveParams) apply(s LiveParamsSnapshot) {
 		s.DepthLevels = 20
 	}
 	lp.DepthLevels = s.DepthLevels
+	if s.QuantityPrecision < 0 {
+		s.QuantityPrecision = 0
+	}
+	if s.QuantityPrecision > 8 {
+		s.QuantityPrecision = 8
+	}
+	lp.QuantityPrecision = s.QuantityPrecision
 	lp.SignalBasedExit = s.SignalBasedExit
 	if s.LongEnabled != nil {
 		lp.LongEnabled = *s.LongEnabled
