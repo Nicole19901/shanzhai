@@ -32,7 +32,9 @@ type engSigSlice struct {
 }
 
 // MarkPriceHook is called whenever a mark price update arrives for a symbol.
-type MarkPriceHook func(sym string, price decimal.Decimal)
+// msgCount is the per-symbol WS message counter at the time of the update;
+// passing it directly avoids re-acquiring w.mu inside the hook.
+type MarkPriceHook func(sym string, price decimal.Decimal, msgCount int64)
 
 // SignalHook is called when an engine fires a valid signal for a symbol.
 // Only the first valid signal per evaluation tick is delivered (engines are tried in order).
@@ -317,18 +319,18 @@ func (w *SymbolWatcher) startStateGoroutines(ctx context.Context, state *symStat
 				if !ok {
 					return
 				}
-				state.msgCount.Add(1)
+				cnt := state.msgCount.Add(1)
 				state.basisTracker.Update(mp)
 				state.markPrice.Store(mp.MarkPrice)
 				state.indexPrice.Store(mp.IndexPrice)
 				state.funding.Store(mp.FundingRate)
 				state.nextFund.Store(mp.NextFundingTime)
-				// Notify execution layer
+				// Notify execution layer; pass cnt directly so hook需不再持锁回调 GetMsgCount
 				w.hookMu.RLock()
 				hook := w.markPriceHook
 				w.hookMu.RUnlock()
 				if hook != nil {
-					hook(state.symbol, mp.MarkPrice)
+					hook(state.symbol, mp.MarkPrice, cnt)
 				}
 			}
 		}

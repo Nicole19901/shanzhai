@@ -112,19 +112,19 @@ func main() {
 	// Mark price hook: 只做原子存储 + 预热日志，绝不阻塞 WS goroutine
 	var wsFirstMsg atomic.Bool
 	var wsWarmupDone atomic.Bool
-	watcher.SetMarkPriceHook(func(sym string, price decimal.Decimal) {
+	watcher.SetMarkPriceHook(func(sym string, price decimal.Decimal, msgCount int64) {
 		if sym != currentSymbol() {
 			return
 		}
 		latestETHMark.Store(price) // 原子写，纳秒级，不会阻塞
 
-		cnt := watcher.GetMsgCount(sym)
+		// msgCount 由 watcher 直接传入，无需回调 GetMsgCount（会持锁）
 		if !wsFirstMsg.Load() {
 			wsFirstMsg.Store(true)
 			eventLog.AddSystem("WS_CONNECTED",
 				fmt.Sprintf("数据流首条消息已收到（交易对 %s），WS 连接正常", sym), nil)
 		}
-		if !wsWarmupDone.Load() && cnt >= 100 {
+		if !wsWarmupDone.Load() && msgCount >= 100 {
 			wsWarmupDone.Store(true)
 			eventLog.AddSystem("WS_WARMUP_OK",
 				fmt.Sprintf("已收到 100 条消息，数据流预热完成（交易对 %s）", sym), nil)
