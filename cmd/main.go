@@ -218,6 +218,7 @@ func main() {
 			if err := rest.CancelAllOrders(switchCtx, oldSymbol); err != nil {
 				log.Warn().Err(err).Str("symbol", oldSymbol).Msg("cancel orders on symbol switch failed")
 			}
+			watcher.Remove(oldSymbol)
 		}
 		if err := rest.SetLeverage(switchCtx, sym, liveParams.Get().Leverage); err != nil {
 			log.Warn().Err(err).Str("symbol", sym).Msg("set leverage on symbol switch failed")
@@ -374,12 +375,7 @@ func bootCheck(ctx context.Context, rest *datafeed.RESTClient, cfg *config.Confi
 	if err := rest.CancelAllOrders(ctx, cfg.Trading.Symbol); err != nil {
 		log.Warn().Err(err).Msg("boot: cancel all orders (may be empty)")
 	}
-	if err := rest.SetLeverage(ctx, cfg.Trading.Symbol, cfg.Trading.Leverage); err != nil {
-		log.Warn().Err(err).Msg("boot: set leverage failed, please check via webui")
-	}
-	if err := rest.SetMarginType(ctx, cfg.Trading.Symbol, cfg.Trading.MarginType); err != nil {
-		log.Warn().Err(err).Msg("boot: set margin type (may already be set)")
-	}
+	// SetLeverage/SetMarginType 已移至 SetSymbolSwitcher，避免对未验证的 cfg.Trading.Symbol 操作
 	log.Info().Msg("boot check passed")
 }
 
