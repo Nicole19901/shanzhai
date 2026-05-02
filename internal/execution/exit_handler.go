@@ -314,13 +314,22 @@ func (h *TradeHandler) TryReversal(ctx context.Context, newDir datafeed.Directio
 
 // windowsConfirmReversal 检查多个时间窗口是否均支持反转方向
 // RCVD 两个窗口都要满足（防短期噪音），OI 满足其一即可（OI 变化比价格慢）
+// 修复：使用 IsNegative() 检查空方向，防止 RCVD==0 时误判（IsPositive()==false 包含零值）
 func windowsConfirmReversal(newDir datafeed.Direction, mctx *datafeed.MarketContext) bool {
 	isLong := newDir == datafeed.DirectionLong
 
-	rcvd5sOk := mctx.RCVD5s.IsPositive() == isLong
-	rcvd30sOk := mctx.RCVD30s.IsPositive() == isLong
-	oi5sOk := mctx.OIDelta5s.IsPositive() == isLong
-	oi30sOk := mctx.OIDelta30s.IsPositive() == isLong
+	var rcvd5sOk, rcvd30sOk, oi5sOk, oi30sOk bool
+	if isLong {
+		rcvd5sOk = mctx.RCVD5s.IsPositive()
+		rcvd30sOk = mctx.RCVD30s.IsPositive()
+		oi5sOk = mctx.OIDelta5s.IsPositive()
+		oi30sOk = mctx.OIDelta30s.IsPositive()
+	} else {
+		rcvd5sOk = mctx.RCVD5s.IsNegative()
+		rcvd30sOk = mctx.RCVD30s.IsNegative()
+		oi5sOk = mctx.OIDelta5s.IsNegative()
+		oi30sOk = mctx.OIDelta30s.IsNegative()
+	}
 
 	return rcvd5sOk && rcvd30sOk && (oi5sOk || oi30sOk)
 }
