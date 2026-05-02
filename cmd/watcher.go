@@ -155,8 +155,9 @@ func (w *SymbolWatcher) Add(ctx context.Context, sym string) error {
 		return nil
 	}
 	state := newSymState(sym, w.rest, w.cfg)
-	// 在锁内派生 cancel，确保 Remove() 拿到真实 cancel 而不是 no-op 占位符
-	symCtx, cancel := context.WithCancel(ctx)
+	// 必须用 w.parentCtx（程序生命周期），不能用调用方传入的 ctx（HTTP 请求 context，
+	// handler 返回后立即取消，会导致所有 symbol goroutine 瞬间退出）
+	symCtx, cancel := context.WithCancel(w.parentCtx)
 	state.cancel = cancel
 	w.states[sym] = state
 	w.mu.Unlock()
