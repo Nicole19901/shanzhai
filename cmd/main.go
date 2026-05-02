@@ -7,9 +7,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
-	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -18,9 +16,7 @@ import (
 	"github.com/yourorg/eth-perp-system/internal/config"
 	"github.com/yourorg/eth-perp-system/internal/datafeed"
 	"github.com/yourorg/eth-perp-system/internal/engine"
-	"github.com/yourorg/eth-perp-system/internal/execution"
 	"github.com/yourorg/eth-perp-system/internal/risk"
-	"github.com/yourorg/eth-perp-system/internal/statemachine"
 	"github.com/yourorg/eth-perp-system/internal/telemetry"
 	"github.com/yourorg/eth-perp-system/internal/webui"
 )
@@ -40,11 +36,6 @@ func main() {
 	}
 	log.Info().Str("symbol", cfg.Trading.Symbol).Int("leverage", cfg.Trading.Leverage).Msg("config loaded")
 
-	// activeSymbol 启动时为空，等前端验证 API Key 和币种后再设置
-	var activeSymbol atomic.Value
-	activeSymbol.Store("")
-	currentSymbol := func() string { return activeSymbol.Load().(string) }
-
 	rest := datafeed.NewRESTClient(cfg.Binance.RESTEndpoint, cfg.Binance.APIKey, cfg.Binance.APISecret)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -62,182 +53,19 @@ func main() {
 	metrics := telemetry.NewMetrics()
 	metrics.ServeHTTP(":9090")
 
-	liveParams := webui.NewLiveParams(cfg)
+	lp := webui.NewLiveParams(cfg)
 	eventLog := webui.NewEventLog(300)
 
-	admin := webui.NewServer(liveParams, eventLog, rest, cfg.WebUI.ServiceName, cfg.Trading.Symbol)
+	admin := webui.NewServer(lp, eventLog, rest, cfg.WebUI.ServiceName, cfg.Trading.Symbol)
 	admin.Listen(cfg.WebUI.Addr)
 
-	pm := execution.NewPositionManager(cfg.Trading.Symbol)
-
-	sm := statemachine.New(func(from, to statemachine.State, reason string) {
-		metrics.StateTransition(from.String(), to.String())
-		metrics.SetState(float64(to))
-	})
-
+	// 共享风控：全局日损/连亏保护，跨所有交易对
 	guard := risk.NewGuardrails(cfg.Risk.DailyLossLimitPct, cfg.Risk.ConsecutiveLossLimit)
-	slippageEst := risk.NewSlippageEstimator()
+	slipEst := risk.NewSlippageEstimator()
 
-	omgr := execution.NewOrderManager(rest, cfg, metrics)
-	omgr.SetSymbolProvider(currentSymbol)
-	tradeHandler := execution.NewTradeHandler(pm, omgr, sm, guard, cfg, liveParams, eventLog, metrics)
-
-	admin.SetManualTrader(tradeHandler)
-
-	recon := execution.NewReconciliationLoop(
-		rest, pm, omgr, sm, tradeHandler, cfg.Trading.Symbol,
-		cfg.Execution.ReconciliationIntervalSec,
-	)
-	recon.SetSymbolProvider(currentSymbol)
-
-	// WS クライアント: 起動時は空ストリーム、watcher がシンボル追加後にストリームを確立
-	ethWS, err := datafeed.NewWSClient(cfg.Binance.WSEndpoint, nil, nil)
-	if err != nil {
-		log.Fatal().Err(err).Msg("eth ws init failed")
-	}
-	log.Info().Msg("ws client created; waiting for symbol to be set via webui before connecting")
-
-	// watcher = 全シンボルのデータ収集 + エンジン評価の単一ソース
-	watcher := NewSymbolWatcher(ethWS, rest, liveParams, cfg)
-	watcher.SetParentContext(ctx)
-
-	// latestETHMark: トレードハンドラ用のマーク価格（watcher の mark price hook で更新）
-	var latestETHMark atomic.Value
-	latestETHMark.Store(decimal.Zero)
-
-	tradeHandler.SetMarkPriceProvider(func() decimal.Decimal {
-		return latestETHMark.Load().(decimal.Decimal)
-	})
-
-	// Mark price hook: 只做原子存储 + 预热日志，绝不阻塞 WS goroutine
-	var wsFirstMsg atomic.Bool
-	var wsWarmupDone atomic.Bool
-	watcher.SetMarkPriceHook(func(sym string, price decimal.Decimal, msgCount int64) {
-		if sym != currentSymbol() {
-			return
-		}
-		latestETHMark.Store(price) // 原子写，纳秒级，不会阻塞
-
-		// msgCount 由 watcher 直接传入，无需回调 GetMsgCount（会持锁）
-		if !wsFirstMsg.Load() {
-			wsFirstMsg.Store(true)
-			eventLog.AddSystem("WS_CONNECTED",
-				fmt.Sprintf("数据流首条消息已收到（交易对 %s），WS 连接正常", sym), nil)
-		}
-		if !wsWarmupDone.Load() && msgCount >= 100 {
-			wsWarmupDone.Store(true)
-			eventLog.AddSystem("WS_WARMUP_OK",
-				fmt.Sprintf("已收到 100 条消息，数据流预热完成（交易对 %s）", sym), nil)
-		}
-	})
-
-	// signalQueue: 解耦 evaluator goroutine 与下单 REST 调用，防止 WS goroutine 被阻塞
-	type signalQueueEntry struct {
-		sym  string
-		sig  *engine.Signal
-		mctx *datafeed.MarketContext
-	}
-	signalQueue := make(chan signalQueueEntry, 1)
-
-	// Signal hook: 仅做轻量过滤 + 非阻塞投递，不做任何 REST 调用
-	watcher.SetSignalHook(func(sym string, sig *engine.Signal, mctx *datafeed.MarketContext) {
-		if sym != currentSymbol() {
-			return
-		}
-		// 状态机过滤（无锁读，快速路径）
-		switch sig.Engine {
-		case engine.EngineTrend:
-			if !sm.CanOpenTrend() {
-				return
-			}
-		default:
-			if !sm.CanOpen() {
-				return
-			}
-		}
-		if !guard.CanTrade() || !omgr.HasCredentials() {
-			return
-		}
-		// 非阻塞投递；队列满时丢弃（上一个信号仍在处理中）
-		select {
-		case signalQueue <- signalQueueEntry{sym: sym, sig: sig, mctx: mctx}:
-		default:
-			log.Debug().Str("engine", string(sig.Engine)).Msg("signal queue full, dropping signal")
-		}
-	})
-
-	// trade_executor goroutine 在 start 辅助函数定义后启动（见下方）
-
-	// 状态提供者：WS 预热状态（使用 watcher 的消息计数）
-	admin.SetStatusProvider(func() map[string]interface{} {
-		sym := currentSymbol()
-		msgs := watcher.GetMsgCount(sym)
-		return map[string]interface{}{
-			"symbol":          sym,
-			"ws_msg_count":    msgs,
-			"warmup_done":     msgs >= 100,
-			"has_credentials": rest.HasCredentials(),
-		}
-	})
-
-	// 市场快照提供者：直接从 watcher 读取所有监控币种的数据
-	admin.SetMarketProvider(func() map[string]interface{} {
-		return map[string]interface{}{
-			"symbols": watcher.AllSnapshots(),
-			"active":  currentSymbol(),
-		}
-	})
-
-	// Watchlist 处理器
-	admin.SetWatchlistHandlers(
-		func(addCtx context.Context, sym string) error {
-			return watcher.Add(addCtx, sym)
-		},
-		func(sym string) {
-			watcher.Remove(sym)
-		},
-		func() []string {
-			return watcher.Symbols()
-		},
-	)
-
-	// Symbol switcher: API Key 验证 → 选币 → 建立 WS 连接 → 进入引擎
-	admin.SetSymbolSwitcher(func(switchCtx context.Context, sym string) error {
-		sym = strings.ToUpper(strings.TrimSpace(sym))
-		if sym == "" {
-			return fmt.Errorf("symbol is required")
-		}
-		if !rest.HasCredentials() {
-			return fmt.Errorf("请先在 WebUI 验证并应用 API Key，再设置交易对")
-		}
-		if !pm.SetSymbol(sym) {
-			return fmt.Errorf("cannot switch symbol while local position is open")
-		}
-		oldSymbol := currentSymbol()
-		if oldSymbol != "" && oldSymbol != sym {
-			if err := rest.CancelAllOrders(switchCtx, oldSymbol); err != nil {
-				log.Warn().Err(err).Str("symbol", oldSymbol).Msg("cancel orders on symbol switch failed")
-			}
-			watcher.Remove(oldSymbol)
-		}
-		if err := rest.SetLeverage(switchCtx, sym, liveParams.Get().Leverage); err != nil {
-			log.Warn().Err(err).Str("symbol", sym).Msg("set leverage on symbol switch failed")
-		}
-		if err := rest.SetMarginType(switchCtx, sym, cfg.Trading.MarginType); err != nil {
-			log.Warn().Err(err).Str("symbol", sym).Msg("set margin type on symbol switch failed")
-		}
-
-		activeSymbol.Store(sym)
-		admin.SetSymbol(sym)
-
-		// 重置活跃品种的本地状态
-		latestETHMark.Store(decimal.Zero)
-		wsFirstMsg.Store(false)
-		wsWarmupDone.Store(false)
-
-		// watcher 负责建立 WS 连接并启动引擎 goroutine
-		return watcher.Add(switchCtx, sym)
-	})
+	// workers: sym → symbolWorker，最多 maxSymbols 个
+	var workersMu sync.RWMutex
+	workers := make(map[string]*symbolWorker)
 
 	var wg sync.WaitGroup
 	start := func(name string, fn func()) {
@@ -253,103 +81,152 @@ func main() {
 		}()
 	}
 
+	ethWS, err := datafeed.NewWSClient(cfg.Binance.WSEndpoint, nil, nil)
+	if err != nil {
+		log.Fatal().Err(err).Msg("eth ws init failed")
+	}
+	log.Info().Msg("ws client created; waiting for symbols to be added via webui")
+
+	watcher := NewSymbolWatcher(ethWS, rest, lp, cfg)
+	watcher.SetParentContext(ctx)
+
+	// Mark price hook: 按 sym 路由到对应 worker
+	watcher.SetMarkPriceHook(func(sym string, price decimal.Decimal, msgCount int64) {
+		workersMu.RLock()
+		w, ok := workers[sym]
+		workersMu.RUnlock()
+		if !ok {
+			return
+		}
+		w.markPrice.Store(price)
+		if !w.wsFirstMsg.Load() {
+			w.wsFirstMsg.Store(true)
+			eventLog.AddSystem("WS_CONNECTED",
+				fmt.Sprintf("数据流首条消息已收到（%s），WS 连接正常", sym), nil)
+		}
+		if !w.wsWarmupDone.Load() && msgCount >= 100 {
+			w.wsWarmupDone.Store(true)
+			eventLog.AddSystem("WS_WARMUP_OK",
+				fmt.Sprintf("已收到 100 条消息，数据流预热完成（%s）", sym), nil)
+		}
+	})
+
+	// Signal hook: 按 sym 路由到对应 worker 的信号队列
+	watcher.SetSignalHook(func(sym string, sig *engine.Signal, mctx *datafeed.MarketContext) {
+		workersMu.RLock()
+		w, ok := workers[sym]
+		workersMu.RUnlock()
+		if !ok {
+			return
+		}
+		switch sig.Engine {
+		case engine.EngineTrend:
+			if !w.sm.CanOpenTrend() {
+				return
+			}
+		default:
+			if !w.sm.CanOpen() {
+				return
+			}
+		}
+		if !guard.CanTrade() || !rest.HasCredentials() {
+			return
+		}
+		select {
+		case w.signalQueue <- signalQueueEntry{sym: sym, sig: sig, mctx: mctx}:
+		default:
+			log.Debug().Str("sym", sym).Str("engine", string(sig.Engine)).Msg("signal queue full, dropping")
+		}
+	})
+
+	// addWorker: 创建新的 symbolWorker（调用前须持写锁）
+	addWorker := func(sym string) {
+		if _, exists := workers[sym]; exists {
+			return
+		}
+		w := newSymbolWorker(ctx, sym, rest, guard, slipEst, cfg, lp, eventLog, metrics, start)
+		workers[sym] = w
+		log.Info().Str("sym", sym).Msg("symbol worker started")
+	}
+
+	removeWorker := func(sym string) {
+		workersMu.Lock()
+		w, ok := workers[sym]
+		if ok {
+			delete(workers, sym)
+		}
+		workersMu.Unlock()
+		if ok {
+			w.cancel()
+			log.Info().Str("sym", sym).Msg("symbol worker stopped")
+		}
+	}
+
+	// Watchlist handlers: 加入 = 验证(server侧已做) + 杠杆设置 + 建立 WS + 创建 worker
+	admin.SetWatchlistHandlers(
+		func(addCtx context.Context, sym string) error {
+			workersMu.RLock()
+			count := len(workers)
+			_, exists := workers[sym]
+			workersMu.RUnlock()
+			if exists {
+				return nil // 幂等
+			}
+			if count >= maxSymbols {
+				return fmt.Errorf("最多同时交易 %d 个交易对，请先移除一个", maxSymbols)
+			}
+			if err := rest.SetLeverage(addCtx, sym, lp.Get().Leverage); err != nil {
+				log.Warn().Err(err).Str("sym", sym).Msg("set leverage failed (non-fatal)")
+			}
+			if err := rest.SetMarginType(addCtx, sym, cfg.Trading.MarginType); err != nil {
+				log.Warn().Err(err).Str("sym", sym).Msg("set margin type failed (non-fatal)")
+			}
+			if err := watcher.Add(addCtx, sym); err != nil {
+				return err
+			}
+			workersMu.Lock()
+			addWorker(sym)
+			workersMu.Unlock()
+			return nil
+		},
+		func(sym string) {
+			removeWorker(sym)
+			watcher.Remove(sym)
+		},
+		func() []string {
+			return watcher.Symbols()
+		},
+	)
+
+	// Status provider
+	admin.SetStatusProvider(func() map[string]interface{} {
+		workersMu.RLock()
+		syms := make([]string, 0, len(workers))
+		warmupMap := make(map[string]bool, len(workers))
+		msgMap := make(map[string]int64, len(workers))
+		for sym, w := range workers {
+			syms = append(syms, sym)
+			warmupMap[sym] = w.wsWarmupDone.Load()
+			msgMap[sym] = watcher.GetMsgCount(sym)
+		}
+		workersMu.RUnlock()
+		return map[string]interface{}{
+			"symbols":         syms,
+			"warmup":          warmupMap,
+			"ws_msg_count":    msgMap,
+			"has_credentials": rest.HasCredentials(),
+		}
+	})
+
+	// Market provider
+	admin.SetMarketProvider(func() map[string]interface{} {
+		return map[string]interface{}{
+			"symbols": watcher.AllSnapshots(),
+			"active":  "", // 多币模式无单一 active，由前端自主选择
+		}
+	})
+
 	start("eth_ws", func() { ethWS.Run(ctx) })
-	start("state_machine", func() { sm.Run(ctx) })
-	start("reconciliation", func() { recon.Run(ctx) })
-
-	// trade_executor: 串行消费信号队列，执行滑点检查 + TryReversal/TryOpen（允许阻塞 REST）
-	start("trade_executor", func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case entry := <-signalQueue:
-				sym, sig, mctx := entry.sym, entry.sig, entry.mctx
-				if sym != currentSymbol() {
-					continue
-				}
-				lp := liveParams.Get()
-				if sig.Direction == datafeed.DirectionLong && (lp.LongEnabled == nil || !*lp.LongEnabled) {
-					continue
-				}
-				if sig.Direction == datafeed.DirectionShort && (lp.ShortEnabled == nil || !*lp.ShortEnabled) {
-					continue
-				}
-
-				metrics.SignalGenerated(string(sig.Engine), dirLabel(sig.Direction))
-
-				ethMark := latestETHMark.Load().(decimal.Decimal)
-				prec := int32(lp.QuantityPrecision)
-				if prec < 0 {
-					prec = 0
-				}
-				lotDecimal, lotErr := decimal.NewFromString(lp.MarginUSDT)
-				if lotErr == nil && lotDecimal.IsPositive() {
-					lotDecimal = lotDecimal.Mul(decimal.NewFromInt(int64(lp.Leverage))).Div(ethMark).Truncate(prec)
-				}
-				if lotErr != nil || lotDecimal.IsZero() || lotDecimal.IsNegative() {
-					log.Error().Str("margin_usdt", lp.MarginUSDT).Msg("invalid live margin, signal rejected")
-					eventLog.AddReject("SIGNAL_REJECTED", "invalid live lot size", map[string]interface{}{
-						"engine": string(sig.Engine), "dir": dirLabel(sig.Direction),
-						"margin_usdt": lp.MarginUSDT,
-					})
-					continue
-				}
-
-				spreadBps, _ := mctx.SpreadBps.Float64()
-				lot, _ := lotDecimal.Float64()
-				var depth decimal.Decimal
-				if sig.Direction == datafeed.DirectionLong {
-					depth = mctx.TotalBidDepth
-				} else {
-					depth = mctx.TotalAskDepth
-				}
-				depthF, _ := depth.Float64()
-				vol1m, _ := mctx.RealizedVol1m.Float64()
-				estSlip := slippageEst.Estimate(spreadBps, lot, depthF, vol1m*10000)
-				if estSlip > lp.MaxSlippageBps {
-					log.Debug().Float64("est_slip_bps", estSlip).Msg("slippage too high, signal rejected")
-					eventLog.AddReject("SIGNAL_REJECTED", "estimated slippage exceeds max", map[string]interface{}{
-						"engine": string(sig.Engine), "dir": dirLabel(sig.Direction),
-						"est_slip_bps": estSlip, "max_bps": lp.MaxSlippageBps,
-					})
-					continue
-				}
-				tpPct := lp.LongTPPct
-				if sig.Direction == datafeed.DirectionShort {
-					tpPct = lp.ShortTPPct
-				}
-				if slippageEst.ShouldReject(tpPct, sig.Confidence, estSlip, 0.04) {
-					eventLog.AddReject("SIGNAL_REJECTED", "expected pnl does not cover trading cost", map[string]interface{}{
-						"engine": string(sig.Engine), "dir": dirLabel(sig.Direction),
-						"confidence": sig.Confidence, "est_slip_bps": estSlip,
-					})
-					continue
-				}
-
-				tradeHandler.TryReversal(ctx, sig.Direction, mctx)
-				tradeHandler.TryOpen(ctx, sig)
-			}
-		}
-	})
-
-	// exit_monitor: 独立 goroutine 轮询最新 mark price 检查平仓条件
-	// 与 WS goroutine 完全解耦，避免 REST 调用阻塞 markPrice channel
-	start("exit_monitor", func() {
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				price := latestETHMark.Load().(decimal.Decimal)
-				if !price.IsZero() {
-					tradeHandler.CheckAndExit(ctx, price)
-				}
-			}
-		}
-	})
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -367,7 +244,7 @@ func bootCheck(ctx context.Context, rest *datafeed.RESTClient, cfg *config.Confi
 	}
 	risks, err := rest.PositionRisk(ctx, cfg.Trading.Symbol)
 	if err != nil {
-		log.Warn().Err(err).Msg("boot: cannot fetch position risk, skipping (credentials can be set via webui)")
+		log.Warn().Err(err).Msg("boot: cannot fetch position risk, skipping")
 		return
 	}
 	for _, r := range risks {
@@ -379,7 +256,6 @@ func bootCheck(ctx context.Context, rest *datafeed.RESTClient, cfg *config.Confi
 	if err := rest.CancelAllOrders(ctx, cfg.Trading.Symbol); err != nil {
 		log.Warn().Err(err).Msg("boot: cancel all orders (may be empty)")
 	}
-	// SetLeverage/SetMarginType 已移至 SetSymbolSwitcher，避免对未验证的 cfg.Trading.Symbol 操作
 	log.Info().Msg("boot check passed")
 }
 
@@ -413,4 +289,3 @@ func symbolHandlers(symbol string, chs *datafeed.Channels) map[string]datafeed.S
 		base + "@markPrice@1s": datafeed.MakeMarkPriceHandler(chs.ETHMarkPrice),
 	}
 }
-
